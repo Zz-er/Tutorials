@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-5 -10 589 515"
+     width="589" height="515"
+     style="background: #ffffff">
+  <defs>
+    <marker id="arrow_1e3a5f" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#1e3a5f"/></marker>
+    <marker id="arrow_dc2626" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#dc2626"/></marker>
+  </defs>
+  <rect x="15" y="50" width="280" height="430" rx="8" fill="none" stroke="#1e3a5f" stroke-width="1" stroke-dasharray="8 4" opacity="1"/>
+  <rect x="50" y="80" width="210" height="35" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <path d="M155,117 L155,137" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="30" y="130" width="250" height="255" rx="8" fill="none" stroke="#64748b" stroke-width="1"  opacity="1"/>
+  <rect x="50" y="158" width="210" height="35" rx="8" fill="#60a5fa" stroke="#1e3a5f" stroke-width="3"  opacity="1"/>
+  <path d="M155,195 L155,213" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="50" y="215" width="210" height="35" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <path d="M155,252 L155,270" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="50" y="272" width="210" height="35" rx="8" fill="#60a5fa" stroke="#1e3a5f" stroke-width="3"  opacity="1"/>
+  <path d="M155,309 L155,327" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="50" y="329" width="210" height="35" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <rect x="50" y="400" width="210" height="35" rx="8" fill="#60a5fa" stroke="#1e3a5f" stroke-width="3"  opacity="1"/>
+  <path d="M155,366 L155,398" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="50" y="450" width="210" height="35" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <path d="M155,437 L155,448" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <path d="M262,346 L322,346" fill="none" stroke="#dc2626" stroke-width="2" stroke-dasharray="8 4" marker-end="url(#arrow_dc2626)" opacity="1"/>
+  <rect x="324" y="260" width="240" height="220" rx="8" fill="none" stroke="#dc2626" stroke-width="1" stroke-dasharray="8 4" opacity="1"/>
+  <rect x="354" y="295" width="180" height="38" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <path d="M444,335 L444,355" fill="none" stroke="#dc2626" stroke-width="2"  marker-end="url(#arrow_dc2626)" opacity="1"/>
+  <rect x="354" y="357" width="180" height="48" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="3"  opacity="1"/>
+  <path d="M444,407 L444,427" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="354" y="429" width="180" height="38" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <ellipse cx="347" cy="65" rx="7" ry="7" fill="#fee2e2" stroke="#dc2626" stroke-width="2" opacity="1"/>
+  <ellipse cx="347" cy="87" rx="7" ry="7" fill="#60a5fa" stroke="#1e3a5f" stroke-width="2" opacity="1"/>
+  <text x="310" y="30.4" text-anchor="middle" font-size="24" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#1e40af" opacity="1"><tspan x="310" dy="0">Llama 模型的算子调用链</tspan></text>
+  <text x="25" y="66.9" text-anchor="start" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#1e40af" opacity="1"><tspan x="25" dy="0">LlamaForCausalLM</tspan></text>
+  <text x="155" y="100.65" text-anchor="middle" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="155" dy="0">embed_tokens</tspan></text>
+  <text x="38" y="143.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="38" dy="0">LlamaDecoderLayer (x N)</tspan></text>
+  <text x="155" y="177.975" text-anchor="middle" font-size="11" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#ffffff" opacity="1"><tspan x="155" dy="0">input_layernorm (RMSNorm)</tspan></text>
+  <text x="155" y="234.975" text-anchor="middle" font-size="11" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="155" dy="0">self_attn (LlamaAttention)</tspan></text>
+  <text x="155" y="291.75" text-anchor="middle" font-size="10" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#ffffff" opacity="1"><tspan x="155" dy="0">post_attn_layernorm (RMSNorm)</tspan></text>
+  <text x="155" y="349.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="155" dy="0">mlp (LlamaMLP)</tspan></text>
+  <text x="155" y="420.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#ffffff" opacity="1"><tspan x="155" dy="0">final norm (RMSNorm)</tspan></text>
+  <text x="155" y="470.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="155" dy="0">lm_head (Linear)</tspan></text>
+  <text x="334" y="275.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#dc2626" opacity="1"><tspan x="334" dy="0">LlamaMLP 内部</tspan></text>
+  <text x="444" y="317.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="444" dy="0">gate_up_proj (Linear)</tspan></text>
+  <text x="444" y="384.65" text-anchor="middle" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#dc2626" opacity="1"><tspan x="444" dy="0">act_fn (SiluAndMul)</tspan></text>
+  <text x="444" y="451.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="444" dy="0">down_proj (Linear)</tspan></text>
+  <text x="360" y="66.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#dc2626" opacity="1"><tspan x="360" dy="0">= SiluAndMul (可替换)</tspan></text>
+  <text x="360" y="88.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#1e3a5f" opacity="1"><tspan x="360" dy="0">= RMSNorm (可替换)</tspan></text>
+</svg>

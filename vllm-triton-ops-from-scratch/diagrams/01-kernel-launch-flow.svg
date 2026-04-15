@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="10 -10 720 485"
+     width="720" height="485"
+     style="background: #ffffff">
+  <defs>
+    <marker id="arrow_1e3a5f" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#1e3a5f"/></marker>
+    <marker id="arrow_047857" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#047857"/></marker>
+    <marker id="arrow_6d28d9" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#6d28d9"/></marker>
+  </defs>
+  <rect x="250" y="60" width="240" height="45" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <path d="M370,107 L370,137" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="190" y="140" width="360" height="45" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"  opacity="1"/>
+  <path d="M370,187 L370,217" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="240" y="220" width="260" height="45" rx="8" fill="#3b82f6" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <path d="M290,267 L115,317" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <path d="M370,267 L370,317" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <path d="M450,267 L625,317" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <rect x="30" y="320" width="170" height="40" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <rect x="285" y="320" width="170" height="40" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <rect x="540" y="320" width="170" height="40" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <path d="M115,362 L300,402" fill="none" stroke="#6d28d9" stroke-width="2"  marker-end="url(#arrow_6d28d9)" opacity="1"/>
+  <path d="M370,362 L370,402" fill="none" stroke="#6d28d9" stroke-width="2"  marker-end="url(#arrow_6d28d9)" opacity="1"/>
+  <path d="M625,362 L440,402" fill="none" stroke="#6d28d9" stroke-width="2"  marker-end="url(#arrow_6d28d9)" opacity="1"/>
+  <rect x="180" y="405" width="380" height="50" rx="8" fill="#ddd6fe" stroke="#6d28d9" stroke-width="2"  opacity="1"/>
+  <text x="370" y="30.4" text-anchor="middle" font-size="24" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#1e40af" opacity="1"><tspan x="370" dy="0">Triton Kernel 启动流程</tspan></text>
+  <text x="370" y="85.65" text-anchor="middle" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="370" dy="0">Python: triton_add(x, y)</tspan></text>
+  <text x="370" y="165.65" text-anchor="middle" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="370" dy="0">grid = ceil(n_elements / BLOCK_SIZE)</tspan></text>
+  <text x="370" y="246.1" text-anchor="middle" font-size="16" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#ffffff" opacity="1"><tspan x="370" dy="0">启动 grid 个 program</tspan></text>
+  <text x="115" y="343.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="115" dy="0">Program 0: [0, BS)</tspan></text>
+  <text x="370" y="343.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="370" dy="0">Program 1: [BS, 2*BS)</tspan></text>
+  <text x="625" y="343.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="625" dy="0">Program N: [N*BS, ...)</tspan></text>
+  <text x="245" y="345.6" text-anchor="middle" font-size="16" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#94a3b8" opacity="1"><tspan x="245" dy="0">···</tspan></text>
+  <text x="500" y="345.6" text-anchor="middle" font-size="16" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#94a3b8" opacity="1"><tspan x="500" dy="0">···</tspan></text>
+  <text x="370" y="434.1" text-anchor="middle" font-size="16" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#6d28d9" opacity="1"><tspan x="370" dy="0">GPU 并行执行所有 programs</tspan></text>
+</svg>
