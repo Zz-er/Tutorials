@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-5 -10 660 460"
+     width="660" height="460"
+     style="background: #ffffff">
+  <defs>
+    <marker id="arrow_b45309" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#b45309"/></marker>
+    <marker id="arrow_1e3a5f" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#1e3a5f"/></marker>
+    <marker id="arrow_047857" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#047857"/></marker>
+  </defs>
+  <rect x="15" y="55" width="620" height="75" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1"  opacity="0.3"/>
+  <rect x="30" y="82" width="120" height="38" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"  opacity="1"/>
+  <path d="M152,101 L178,101" fill="none" stroke="#b45309" stroke-width="2"  marker-end="url(#arrow_b45309)" opacity="1"/>
+  <rect x="180" y="82" width="130" height="38" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"  opacity="1"/>
+  <path d="M312,101 L338,101" fill="none" stroke="#b45309" stroke-width="2"  marker-end="url(#arrow_b45309)" opacity="1"/>
+  <rect x="340" y="82" width="140" height="38" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"  opacity="1"/>
+  <path d="M482,101 L508,101" fill="none" stroke="#b45309" stroke-width="2"  marker-end="url(#arrow_b45309)" opacity="1"/>
+  <rect x="510" y="82" width="110" height="38" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"  opacity="1"/>
+  <path d="M325,132 L325,150" fill="none" stroke="#1e3a5f" stroke-width="3"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="15" y="155" width="620" height="75" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="1"  opacity="0.3"/>
+  <rect x="30" y="182" width="130" height="38" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <path d="M162,201 L188,201" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <rect x="190" y="182" width="170" height="38" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <path d="M362,201 L388,201" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <rect x="390" y="182" width="130" height="38" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <path d="M522,201 L548,201" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <rect x="550" y="182" width="80" height="38" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <path d="M325,232 L325,250" fill="none" stroke="#1e3a5f" stroke-width="3"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="15" y="255" width="620" height="75" rx="8" fill="#ddd6fe" stroke="#6d28d9" stroke-width="1"  opacity="0.3"/>
+  <rect x="30" y="282" width="140" height="38" rx="8" fill="#ddd6fe" stroke="#6d28d9" stroke-width="2"  opacity="1"/>
+  <rect x="200" y="282" width="150" height="38" rx="8" fill="#ddd6fe" stroke="#6d28d9" stroke-width="2"  opacity="1"/>
+  <rect x="380" y="282" width="160" height="38" rx="8" fill="#ddd6fe" stroke="#6d28d9" stroke-width="2"  opacity="1"/>
+  <path d="M325,332 L325,350" fill="none" stroke="#1e3a5f" stroke-width="3"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <rect x="15" y="355" width="620" height="75" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1"  opacity="0.3"/>
+  <rect x="30" y="382" width="130" height="38" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"  opacity="1"/>
+  <rect x="190" y="382" width="130" height="38" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"  opacity="1"/>
+  <rect x="350" y="382" width="150" height="38" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2"  opacity="1"/>
+  <text x="325" y="30.4" text-anchor="middle" font-size="24" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#1e40af" opacity="1"><tspan x="325" dy="0">全教程知识图谱</tspan></text>
+  <text x="20" y="68.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#b45309" opacity="1"><tspan x="20" dy="0">Level 0: Triton 基础 (NB 01)</tspan></text>
+  <text x="90" y="104.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="90" dy="0">@triton.jit</tspan></text>
+  <text x="245" y="104.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="245" dy="0">program_id / BS</tspan></text>
+  <text x="410" y="104.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="410" dy="0">load/store/mask</tspan></text>
+  <text x="565" y="104.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="565" dy="0">1D/2D Grid</tspan></text>
+  <text x="20" y="168.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#047857" opacity="1"><tspan x="20" dy="0">Level 1: CustomOp 注册 (NB 02)</tspan></text>
+  <text x="95" y="204.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="95" dy="0">CustomOp 基类</tspan></text>
+  <text x="275" y="204.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="275" dy="0">native / cuda 双路</tspan></text>
+  <text x="455" y="204.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="455" dy="0">@register</tspan></text>
+  <text x="590" y="204.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="590" dy="0">平台分发</tspan></text>
+  <text x="20" y="268.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#6d28d9" opacity="1"><tspan x="20" dy="0">Level 2: 融合算子 (NB 03)</tspan></text>
+  <text x="100" y="304.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="100" dy="0">Memory-bound</tspan></text>
+  <text x="275" y="304.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="275" dy="0">Fused SiLU+Mul</tspan></text>
+  <text x="460" y="303.975" text-anchor="middle" font-size="11" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="460" dy="0">Fused Add+RMSNorm</tspan></text>
+  <text x="20" y="368.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#dc2626" opacity="1"><tspan x="20" dy="0">Level 3: 模型级替换 (NB 04)</tspan></text>
+  <text x="95" y="404.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="95" dy="0">OOT 注册机制</tspan></text>
+  <text x="255" y="404.425" text-anchor="middle" font-size="13" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="255" dy="0">register_oot</tspan></text>
+  <text x="425" y="404.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="425" dy="0">Llama 算子替换</tspan></text>
+</svg>

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 -10 730 359"
+     width="730" height="359"
+     style="background: #ffffff">
+  <defs>
+    <marker id="arrow_1e3a5f" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#1e3a5f"/></marker>
+    <marker id="arrow_dc2626" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#dc2626"/></marker>
+    <marker id="arrow_047857" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#047857"/></marker>
+    <marker id="arrow_b45309" viewBox="0 0 10 6" refX="9" refY="3" markerWidth="8" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,3 L0,6 Z" fill="#b45309"/></marker>
+  </defs>
+  <rect x="20" y="120" width="160" height="80" rx="8" fill="#93c5fd" stroke="#1e3a5f" stroke-width="2"  opacity="1"/>
+  <rect x="280" y="55" width="180" height="55" rx="8" fill="#a7f3d0" stroke="#047857" stroke-width="2"  opacity="1"/>
+  <rect x="280" y="140" width="180" height="55" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="3"  opacity="1"/>
+  <rect x="280" y="225" width="180" height="55" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="2"  opacity="1"/>
+  <rect x="560" y="115" width="150" height="90" rx="8" fill="#ddd6fe" stroke="#6d28d9" stroke-width="2"  opacity="1"/>
+  <path d="M182,140 L278,82" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <path d="M182,160 L278,167" fill="none" stroke="#dc2626" stroke-width="2"  marker-end="url(#arrow_dc2626)" opacity="1"/>
+  <path d="M182,180 L278,252" fill="none" stroke="#1e3a5f" stroke-width="2"  marker-end="url(#arrow_1e3a5f)" opacity="1"/>
+  <path d="M462,82 L558,140" fill="none" stroke="#047857" stroke-width="2"  marker-end="url(#arrow_047857)" opacity="1"/>
+  <path d="M462,167 L558,160" fill="none" stroke="#dc2626" stroke-width="2"  marker-end="url(#arrow_dc2626)" opacity="1"/>
+  <path d="M462,252 L558,180" fill="none" stroke="#b45309" stroke-width="2"  marker-end="url(#arrow_b45309)" opacity="1"/>
+  <ellipse cx="28" cy="318" rx="8" ry="8" fill="#fee2e2" stroke="#dc2626" stroke-width="2" opacity="1"/>
+  <text x="370" y="30.4" text-anchor="middle" font-size="24" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#1e40af" opacity="1"><tspan x="370" dy="0">GPU 编程的三个层级</tspan></text>
+  <text x="100" y="153.6" text-anchor="middle" font-size="16" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="100" dy="0">PyTorch</tspan><tspan x="100" dy="20">Python</tspan></text>
+  <text x="370" y="85.65" text-anchor="middle" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="370" dy="0">PyTorch Native Ops</tspan></text>
+  <text x="370" y="122.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="370" dy="0">简单但慢</tspan></text>
+  <text x="370" y="171.1" text-anchor="middle" font-size="16" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#dc2626" opacity="1"><tspan x="370" dy="0">Triton Kernels</tspan></text>
+  <text x="370" y="207.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="370" dy="0">中等复杂度</tspan></text>
+  <text x="370" y="255.65" text-anchor="middle" font-size="14" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#374151" opacity="1"><tspan x="370" dy="0">CUDA C++ Kernels</tspan></text>
+  <text x="370" y="292.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="370" dy="0">最高性能</tspan></text>
+  <text x="635" y="165" text-anchor="middle" font-size="20" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#6d28d9" opacity="1"><tspan x="635" dy="0">GPU</tspan></text>
+  <text x="513" y="95.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="513" dy="0">自动调度</tspan></text>
+  <text x="515" y="158.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="515" dy="0">编译到 PTX</tspan></text>
+  <text x="513" y="228.2" text-anchor="middle" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="513" dy="0">直接编译</tspan></text>
+  <text x="42" y="321.2" text-anchor="start" font-size="12" font-family="'Cascadia Code', 'Source Code Pro', 'Courier New', monospace" fill="#64748b" opacity="1"><tspan x="42" dy="0">= 本教程重点</tspan></text>
+</svg>
