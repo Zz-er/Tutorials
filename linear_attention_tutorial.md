@@ -1,0 +1,2688 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .md
+      format_name: markdown
+      format_version: '1.3'
+      jupytext_version: 1.19.1
+  kernelspec:
+    display_name: Python 3 (ipykernel)
+    language: python
+    name: python3
+---
+
+# Linear Attention 完全指南：从零基础到前沿
+
+**从 Softmax Attention 到 Gated DeltaNet 的代码级梳理**
+
+---
+
+## 本教程的目标
+
+带你从零理解：
+1. 标准 Attention 是什么、为什么慢
+2. Linear Attention 如何把 O(N²) 变成 O(N)
+3. 为什么它等价于 RNN
+4. 后续改进（RetNet → GLA → DeltaNet → Gated DeltaNet）都在解决什么问题
+
+**每个概念都遵循三步法**：① 比喻直觉 → ② 数学公式 → ③ 可运行代码
+
+---
+
+
+## 第0章：前置知识速览
+
+如果你已经熟悉 PyTorch 基本操作，可以跳过这一章。
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import time
+import numpy as np
+
+# 设置中文显示
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+torch.manual_seed(42)
+print(f"PyTorch 版本: {torch.__version__}")
+print(f"设备: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
+```
+
+```python
+# ===== 0.1 矩阵乘法回顾 =====
+# 矩阵乘法是理解 Attention 的核心操作
+
+A = torch.tensor([[1., 2.],
+                   [3., 4.]])  # 2x2 矩阵
+
+B = torch.tensor([[5., 6.],
+                   [7., 8.]])  # 2x2 矩阵
+
+# 矩阵乘法：第 i 行与第 j 列的点积
+C = A @ B  # 等价于 torch.matmul(A, B)
+print(f"A @ B = \n{C}")
+print(f"\n验证: C[0,0] = 1*5 + 2*7 = {1*5 + 2*7}")
+```
+
+```python
+# ===== 0.2 "结合律"——后面的核心技巧 =====
+# 矩阵乘法满足结合律：(A @ B) @ C == A @ (B @ C)
+# 但"先算谁"会影响计算量！
+#
+# 假设 A: (1000, 2), B: (2, 1000), C: (1000, 2)
+# 方式1: (A @ B) @ C  → 先得到 1000x1000 矩阵，再乘 → 很慢！
+# 方式2: A @ (B @ C)  → 先得到 2x2 矩阵，再乘   → 很快！
+
+N, d = 1000, 2
+A = torch.randn(N, d)
+B = torch.randn(d, N)
+C = torch.randn(N, d)
+
+# 验证结果相同
+result1 = (A @ B) @ C   # 中间结果: NxN = 1000x1000
+result2 = A @ (B @ C)   # 中间结果: dxd = 2x2
+print(f"两种计算顺序结果是否相同: {torch.allclose(result1, result2, atol=1e-4)}")
+print(f"\n方式1 中间矩阵大小: {N}x{N} = {N*N} 个元素")
+print(f"方式2 中间矩阵大小: {d}x{d} = {d*d} 个元素")
+print(f"节省了 {N*N / (d*d):.0f} 倍的中间存储！")
+```
+
+```python
+# ===== 0.3 Softmax 函数 =====
+# softmax 把任意数值变成"概率分布"（非负且和为1）
+
+scores = torch.tensor([2.0, 1.0, 0.1, -1.0, 3.0])
+probs = F.softmax(scores, dim=-1)
+
+print(f"原始分数:  {scores.tolist()}")
+print(f"softmax后: {[f'{p:.4f}' for p in probs.tolist()]}")
+print(f"总和:      {probs.sum().item():.4f}")
+print(f"\n注意: 最大值 3.0 对应的概率最高 ({probs[4]:.3f})")
+print(f"      softmax 会'放大'差异，让模型'聚焦'在重要位置")
+```
+
+```python
+# ===== 0.4 einsum —— 灵活的矩阵操作工具 =====
+# einsum 用简洁的符号表示复杂的张量操作
+
+# 举例: 向量外积 (outer product)
+a = torch.tensor([1., 2., 3.])  # 形状: (3,)
+b = torch.tensor([4., 5.])       # 形状: (2,)
+
+# a 的每个元素与 b 的每个元素相乘，得到 3x2 矩阵
+outer = torch.einsum('i, j -> i j', a, b)
+print(f"a = {a.tolist()}, b = {b.tolist()}")
+print(f"\n外积 (einsum 'i,j->ij'):\n{outer}")
+print(f"\n这就是后面 k * v^T 的操作！")
+```
+
+### 第0章 关键要点
+- **矩阵乘法**：Attention 的核心计算
+- **结合律**：`(AB)C = A(BC)`，计算顺序不同，效率天差地别 → **Linear Attention 的核心技巧**
+- **Softmax**：把数值变成概率分布，会放大差异 → "聚焦"效果
+- **Einsum**：灵活表示张量运算的工具
+
+---
+
+
+## 第1章：标准 Softmax Attention — 从零实现
+
+### 1.1 直觉比喻：图书馆查书
+
+想象你在图书馆找一本书：
+- **Query (Q)**：你脑子里的问题 — "我想找关于猫的书"
+- **Key (K)**：每本书封面上的标签 — "动物"、"烹饪"、"历史"...
+- **Value (V)**：书的实际内容
+
+**查书过程**：
+1. 用你的问题(Q) 和每本书的标签(K) **对比**，算出"相关度分数"
+2. 对相关度做 softmax，变成"注意力权重"（概率分布）
+3. 按权重加权，从每本书(V) 里提取信息
+
+**关键**：你需要和**每一本书**都对比一次 → 书越多(N越大)，查找越慢 → **O(N²) 的瓶颈**
+
+### 1.2 数学公式
+
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right) V$$
+
+其中：
+- Q, K, V 的形状都是 `(N, d)`，N=序列长度，d=特征维度
+- `QK^T` 形状是 `(N, N)` — 这就是 O(N²) 的来源
+- `√d` 是缩放因子，防止点积值过大导致 softmax 饱和
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import time
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+```
+
+```python
+def softmax_attention(Q, K, V):
+    """
+    标准 Softmax Attention（不带因果掩码）
+
+    Q, K, V: (N, d)
+    返回: (N, d)
+    """
+    d = Q.shape[-1]
+    # 第一步：计算相关度分数 (N, N) ← 这是 O(N²) 的来源！
+    scores = Q @ K.T / (d ** 0.5)
+    # 第二步：softmax 归一化，变成概率分布
+    attn_weights = F.softmax(scores, dim=-1)
+    # 第三步：加权求和
+    output = attn_weights @ V
+    return output, attn_weights
+
+# 创建示例数据
+N, d = 6, 4  # 6个token，每个4维特征
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+
+output, attn_weights = softmax_attention(Q, K, V)
+
+print(f"Q 形状: {Q.shape}  ← {N}个token，每个{d}维")
+print(f"K 形状: {K.shape}")
+print(f"V 形状: {V.shape}")
+print(f"注意力矩阵形状: {attn_weights.shape}  ← N×N = {N}×{N}")
+print(f"输出形状: {output.shape}")
+```
+
+```python
+# ===== 1.3 可视化注意力矩阵 =====
+# 注意力矩阵告诉我们"每个 token 在关注谁"
+
+fig, ax = plt.subplots(figsize=(6, 5))
+im = ax.imshow(attn_weights.detach().numpy(), cmap='Blues', vmin=0, vmax=1)
+ax.set_xlabel('Key (被关注的token)')
+ax.set_ylabel('Query (发出关注的token)')
+ax.set_title('Softmax Attention Matrix\n(每行之和=1，颜色越深=关注度越高)')
+for i in range(N):
+    for j in range(N):
+        ax.text(j, i, f'{attn_weights[i, j]:.2f}', ha='center', va='center', fontsize=8)
+plt.colorbar(im)
+plt.tight_layout()
+plt.show()
+
+print("每行之和:", attn_weights.sum(dim=-1).tolist())  # 应该全是1
+```
+
+```python
+# ===== 1.4 加入因果掩码 (Causal Mask) =====
+# 在语言模型中，token 只能看到它"前面"的token（不能偷看未来）
+# 用一个下三角掩码实现
+
+def causal_softmax_attention(Q, K, V):
+    """
+    带因果掩码的 Softmax Attention
+
+    token_i 只能关注 token_0, token_1, ..., token_i（不能看到后面的）
+    """
+    N, d = Q.shape
+    scores = Q @ K.T / (d ** 0.5)
+
+    # 因果掩码：上三角部分设为 -inf，softmax 后变成 0
+    causal_mask = torch.triu(torch.ones(N, N, dtype=torch.bool), diagonal=1)
+    scores = scores.masked_fill(causal_mask, float('-inf'))
+
+    attn_weights = F.softmax(scores, dim=-1)
+    output = attn_weights @ V
+    return output, attn_weights
+
+output_causal, attn_causal = causal_softmax_attention(Q, K, V)
+
+# 可视化因果注意力矩阵
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+for ax, weights, title in zip(axes,
+    [attn_weights, attn_causal],
+    ['Full Attention\n(每个token看全部)', 'Causal Attention\n(每个token只看前面)']):
+    im = ax.imshow(weights.detach().numpy(), cmap='Blues', vmin=0, vmax=1)
+    ax.set_xlabel('Key')
+    ax.set_ylabel('Query')
+    ax.set_title(title)
+    for i in range(N):
+        for j in range(N):
+            val = weights[i, j].item()
+            if val > 0.01:
+                ax.text(j, i, f'{val:.2f}', ha='center', va='center', fontsize=7)
+
+plt.suptitle('因果掩码的效果：上三角被屏蔽', fontsize=13)
+plt.tight_layout()
+plt.show()
+```
+
+```python
+# ===== 1.5 O(N²) 复杂度的直观感受 =====
+# 让我们测量不同序列长度下的计算时间
+
+def benchmark_softmax_attention(N_list, d=64, n_repeats=5):
+    """测量不同序列长度下 softmax attention 的耗时"""
+    times = []
+    for N in N_list:
+        Q = torch.randn(N, d)
+        K = torch.randn(N, d)
+        V = torch.randn(N, d)
+        # 预热
+        _ = causal_softmax_attention(Q, K, V)
+        # 计时
+        start = time.perf_counter()
+        for _ in range(n_repeats):
+            _ = causal_softmax_attention(Q, K, V)
+        elapsed = (time.perf_counter() - start) / n_repeats
+        times.append(elapsed)
+        print(f"  N={N:>5d}: {elapsed*1000:.2f} ms")
+    return times
+
+print("Softmax Attention 计时 (CPU):")
+N_list = [64, 128, 256, 512, 1024, 2048, 4096]
+times_softmax = benchmark_softmax_attention(N_list)
+
+# 画图
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(N_list, [t*1000 for t in times_softmax], 'ro-', linewidth=2, markersize=8, label='实际耗时')
+# 画理论 O(N²) 曲线
+t0 = times_softmax[0] * 1000
+n0 = N_list[0]
+theoretical = [t0 * (n/n0)**2 for n in N_list]
+ax.plot(N_list, theoretical, 'b--', alpha=0.5, label='理论 O(N²)')
+ax.set_xlabel('序列长度 N')
+ax.set_ylabel('耗时 (ms)')
+ax.set_title('Softmax Attention 的 O(N²) 复杂度')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+print("\n结论: 序列长度翻倍，耗时大约翻4倍 → 确认是 O(N²)")
+```
+
+### 第1章 关键要点
+
+| 步骤 | 操作 | 形状变化 | 复杂度 |
+|------|------|----------|--------|
+| 1 | `QK^T` | (N,d)×(d,N) → **(N,N)** | O(N²d) |
+| 2 | softmax | (N,N) → (N,N) | O(N²) |
+| 3 | `× V` | (N,N)×(N,d) → (N,d) | O(N²d) |
+
+- **瓶颈**：步骤1产生了 N×N 的中间矩阵，这就是 O(N²) 的来源
+- **因果掩码**：语言模型中不能偷看未来，用下三角掩码实现
+- **核心问题**：能否避免产生这个 N×N 矩阵？→ 下一章的 Linear Attention！
+
+---
+
+
+## 第2章：Linear Attention 核心魔法 — 结合律换序
+
+### 2.1 直觉比喻：从"逐一查书"到"先做索引"
+
+回到图书馆的比喻：
+- **Softmax Attention**：每次有人来问问题(Q)，你都要翻遍所有书(K)，算相关度 → 来100个人就翻100遍
+- **Linear Attention**：你先把所有书的标签(K)和内容(V)**汇总成一个索引表** `S = K^T V`，然后每个人来了直接查索引 → 不管来多少人，索引只建一次
+
+**"查索引"到底是什么意思？**
+
+S = K^T @ V 是一个 (d, d) 的矩阵，它的第 i 行第 j 列记录的是：
+> "所有 token 的 value 的第 j 维，按它们 key 的第 i 维加权求和"
+
+当一个 query 向量 q 去乘 S（即 `q @ S`）时，展开看：
+```
+output_j = Σ_i q_i * S_ij
+         = Σ_i q_i * Σ_t K[t,i] * V[t,j]    ← 把 S 的定义代入
+         = Σ_t (Σ_i q_i * K[t,i]) * V[t,j]   ← 交换求和顺序
+         = Σ_t (q · k_t) * V[t,j]             ← 括号里就是 q 和第 t 个 key 的点积！
+```
+**这和 Attention 的定义完全一样**：用 q 与每个 k 的相似度作为权重，对 v 加权求和。
+
+但妙处在于：`(q·k_t)` 这个"逐一匹配"的计算，被**藏进了 S 的构建过程中**。
+S 只建一次，之后每个 query 只需做一个 (d,)×(d,d) 的矩阵乘法即可"查到"结果。
+
+| | Softmax Attention | Linear Attention |
+|---|---|---|
+| 来一个 query | 和 N 个 key 逐一算点积 → O(Nd) | 直接 q @ S → **O(d²)** |
+| 来第二个 query | **再**和 N 个 key 逐一算 → 又 O(Nd) | 再乘同一个 S → 又 O(d²) |
+| 索引表 S | 不存在，每次重算 | **只建一次**，所有 query 共用 |
+
+当 N >> d（序列远长于特征维度），这个差别是巨大的！
+
+### 2.2 数学推导
+
+标准 Attention 中，对第 i 个 query 的输出：
+
+$$o_i = \frac{\sum_j \exp(q_i^T k_j / \sqrt{d}) \cdot v_j}{\sum_j \exp(q_i^T k_j / \sqrt{d})}$$
+
+**核心替换**：用核函数 $\phi$ 替代 $\exp$：
+
+$$\exp(q_i^T k_j / \sqrt{d}) \approx \phi(q_i)^T \phi(k_j)$$
+
+替换后：
+
+$$o_i = \frac{\sum_j \phi(q_i)^T \phi(k_j) \cdot v_j}{\sum_j \phi(q_i)^T \phi(k_j)}$$
+
+**关键一步** — 利用结合律把 $\phi(q_i)$ 提出来：
+
+$$o_i = \frac{\phi(q_i)^T \underbrace{\left[\sum_j \phi(k_j) v_j^T\right]}_{S \text{ (d×d 矩阵)}}}{\phi(q_i)^T \underbrace{\left[\sum_j \phi(k_j)\right]}_{z \text{ (d 维向量)}}}$$
+
+S 和 z 只需要算一次，所有 query 共享！
+
+### 2.3 核函数 φ 的选择
+
+| 核函数 | 定义 | 特点 |
+|--------|------|------|
+| `elu+1` | `elu(x) + 1` | 最早的 Linear Transformer 使用，简单 |
+| `ReLU` | `max(0, x)` | 更简单，效果也不差 |
+| `1+x` | `1 + x` | 最简单的线性核 |
+| Random Features | 随机傅里叶特征 | Performer 使用，理论上近似 softmax |
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import time
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+```
+
+```python
+# ===== 2.4 代码实现：各种核函数 =====
+
+def phi_elu(x):
+    """ELU+1 核函数（原始 Linear Transformer 使用）"""
+    return F.elu(x) + 1
+
+def phi_relu(x):
+    """ReLU 核函数"""
+    return F.relu(x)
+
+def phi_1px(x):
+    """1+x 核函数（最简单的）"""
+    return 1 + x
+
+# 可视化不同核函数
+x = torch.linspace(-3, 3, 200)
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(x, phi_elu(x), label='elu(x)+1', linewidth=2)
+ax.plot(x, phi_relu(x), label='relu(x)', linewidth=2)
+ax.plot(x, phi_1px(x), label='1+x', linewidth=2)
+ax.plot(x, torch.exp(x), '--', label='exp(x) (softmax用的)', linewidth=2, alpha=0.7)
+ax.set_xlabel('x')
+ax.set_ylabel('phi(x)')
+ax.set_title('不同核函数的对比')
+ax.legend()
+ax.grid(True, alpha=0.3)
+ax.set_ylim(-0.5, 8)
+plt.tight_layout()
+plt.show()
+
+print("核函数的要求：输出必须非负（保证注意力权重非负）")
+```
+
+```python
+# ===== 2.5 Linear Attention 的 Parallel 实现 =====
+# 这是"不带因果掩码"的版本，最简单，用来理解原理
+
+def linear_attention_noncausal(Q, K, V, phi_fn=phi_elu):
+    """
+    Linear Attention（非因果版本，最简单的形式）
+
+    核心技巧：先算 K^T V（d×d），再用 Q 查询
+    复杂度：O(N d²) 而不是 O(N² d)
+    """
+    # 第一步：对 Q 和 K 应用核函数
+    Q_phi = phi_fn(Q)  # (N, d)
+    K_phi = phi_fn(K)  # (N, d)
+
+    # 第二步：先汇总 → 构建"索引"
+    S = K_phi.T @ V          # (d, d) ← 这是关键！不再是 (N, N)
+    z = K_phi.sum(dim=0)     # (d,)   ← 归一化因子
+
+    # 第三步：每个 query 查索引
+    numerator = Q_phi @ S    # (N, d)
+    denominator = Q_phi @ z  # (N,)
+    denominator = denominator.unsqueeze(-1).clamp(min=1e-6)  # 防止除以0
+
+    output = numerator / denominator
+    return output
+
+# 测试
+N, d = 6, 4
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+
+output_linear = linear_attention_noncausal(Q, K, V)
+print(f"输入形状: Q={Q.shape}, K={K.shape}, V={V.shape}")
+print(f"输出形状: {output_linear.shape}")
+print(f"\n关键中间变量:")
+print(f"  S = K_phi^T @ V 形状: ({d}, {d}) ← 只有 {d*d} 个元素！")
+print(f"  而 Softmax Attention 的 QK^T 形状: ({N}, {N}) = {N*N} 个元素")
+```
+
+```python
+# ===== 2.6 带因果掩码的 Linear Attention =====
+# 因果版本需要一些调整：每个位置 i 的"索引"只包含 0..i 的信息
+
+def linear_attention_causal_naive(Q, K, V, phi_fn=phi_elu):
+    """
+    因果 Linear Attention（朴素实现，为了清楚展示原理）
+
+    token_i 只能看到 token_0 到 token_i
+    注意：这个实现是 O(N²d) 的，只是为了验证正确性
+    """
+    N, d = Q.shape
+    Q_phi = phi_fn(Q)
+    K_phi = phi_fn(K)
+
+    output = torch.zeros(N, d)
+    for i in range(N):
+        # 对每个 query_i，只用 0..i 的 key 和 value
+        S_i = K_phi[:i+1].T @ V[:i+1]     # (d, d)
+        z_i = K_phi[:i+1].sum(dim=0)      # (d,)
+        numerator = Q_phi[i] @ S_i         # (d,)
+        denominator = (Q_phi[i] @ z_i).clamp(min=1e-6)
+        output[i] = numerator / denominator
+    return output
+
+# 另一种等价写法：显式构建 N×N 注意力矩阵（用来对比可视化）
+def linear_attention_causal_explicit(Q, K, V, phi_fn=phi_elu):
+    """
+    因果 Linear Attention — 显式版本
+    构建 N×N 的 "线性注意力矩阵" 用于可视化
+    """
+    N, d = Q.shape
+    Q_phi = phi_fn(Q)
+    K_phi = phi_fn(K)
+
+    # 线性核的"相关度矩阵"
+    attn_raw = Q_phi @ K_phi.T   # (N, N)
+
+    # 因果掩码
+    causal_mask = torch.triu(torch.ones(N, N, dtype=torch.bool), diagonal=1)
+    attn_raw = attn_raw.masked_fill(causal_mask, 0.0)
+
+    # 按行归一化
+    attn_weights = attn_raw / attn_raw.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+
+    output = attn_weights @ V
+    return output, attn_weights
+```
+
+```python
+# ===== 2.7 对比可视化：Softmax vs Linear 注意力分布 =====
+
+def causal_softmax_attention(Q, K, V):
+    N, d = Q.shape
+    scores = Q @ K.T / (d ** 0.5)
+    causal_mask = torch.triu(torch.ones(N, N, dtype=torch.bool), diagonal=1)
+    scores = scores.masked_fill(causal_mask, float('-inf'))
+    attn_weights = F.softmax(scores, dim=-1)
+    output = attn_weights @ V
+    return output, attn_weights
+
+N, d = 8, 16
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+
+_, attn_softmax = causal_softmax_attention(Q, K, V)
+_, attn_linear = linear_attention_causal_explicit(Q, K, V)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+for ax, weights, title in zip(axes,
+    [attn_softmax, attn_linear],
+    ['Softmax Attention\n(尖锐，聚焦少数token)', 'Linear Attention\n(平滑，分散关注)']):
+    im = ax.imshow(weights.detach().numpy(), cmap='Blues', vmin=0)
+    ax.set_xlabel('Key')
+    ax.set_ylabel('Query')
+    ax.set_title(title)
+    plt.colorbar(im, ax=ax)
+
+plt.suptitle('Softmax vs Linear: 注意力分布的锐度差异', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print("关键观察:")
+print("  Softmax: 注意力集中在少数几个token上（尖锐分布）")
+print("  Linear:  注意力更均匀地分布在所有token上（平滑分布）")
+print("  → 这就是 Linear Attention 在'精确检索'上不如 Softmax 的原因")
+```
+
+```python
+# ===== 2.8 速度对比 =====
+
+def benchmark_linear_attention(N_list, d=64, n_repeats=5):
+    times = []
+    for N in N_list:
+        Q = torch.randn(N, d)
+        K = torch.randn(N, d)
+        V = torch.randn(N, d)
+        _ = linear_attention_noncausal(Q, K, V)
+        start = time.perf_counter()
+        for _ in range(n_repeats):
+            _ = linear_attention_noncausal(Q, K, V)
+        elapsed = (time.perf_counter() - start) / n_repeats
+        times.append(elapsed)
+    return times
+
+def benchmark_softmax(N_list, d=64, n_repeats=5):
+    times = []
+    for N in N_list:
+        Q = torch.randn(N, d)
+        K = torch.randn(N, d)
+        V = torch.randn(N, d)
+        _ = causal_softmax_attention(Q, K, V)
+        start = time.perf_counter()
+        for _ in range(n_repeats):
+            _ = causal_softmax_attention(Q, K, V)
+        elapsed = (time.perf_counter() - start) / n_repeats
+        times.append(elapsed)
+    return times
+
+print("计时对比 (CPU, d=64):")
+N_list = [64, 128, 256, 512, 1024, 2048, 4096]
+print("\nSoftmax Attention:")
+times_sm = benchmark_softmax(N_list)
+for n, t in zip(N_list, times_sm):
+    print(f"  N={n:>5d}: {t*1000:.2f} ms")
+
+print("\nLinear Attention (非因果):")
+times_ln = benchmark_linear_attention(N_list)
+for n, t in zip(N_list, times_ln):
+    print(f"  N={n:>5d}: {t*1000:.2f} ms")
+
+# 画图
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(N_list, [t*1000 for t in times_sm], 'ro-', linewidth=2, markersize=8, label='Softmax O(N²)')
+ax.plot(N_list, [t*1000 for t in times_ln], 'bs-', linewidth=2, markersize=8, label='Linear O(N)')
+ax.set_xlabel('序列长度 N')
+ax.set_ylabel('耗时 (ms)')
+ax.set_title('Softmax vs Linear Attention 速度对比')
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+print("\n当 N 变大时，Linear Attention 的优势越来越明显！")
+```
+
+### 第2章 关键要点
+
+| | Softmax Attention | Linear Attention |
+|---|---|---|
+| **计算顺序** | 先算 QK^T (N×N)，再乘V | 先算 K^TV (d×d)，再用Q查 |
+| **中间矩阵** | N×N（巨大） | d×d（固定大小） |
+| **复杂度** | O(N²d) | O(Nd²) |
+| **注意力分布** | 尖锐（聚焦） | 平滑（分散） |
+
+**核心技巧就是结合律换序**：`(Q @ K^T) @ V` → `Q @ (K^T @ V)`
+
+**代价**：注意力分布从尖锐变平滑，"精确检索"能力下降
+
+---
+
+
+## 第3章：RNN 等价形式 — 训练并行，推理递推
+
+### 3.1 直觉比喻：从"每次重新汇总"到"增量更新笔记本"
+
+上一章的因果 Linear Attention 有个问题：
+- token_1 时，汇总 k_0, v_0 → 得到 S_1
+- token_2 时，汇总 k_0, k_1, v_0, v_1 → 得到 S_2
+- token_3 时，汇总 k_0, k_1, k_2, v_0, v_1, v_2 → 得到 S_3
+
+但其实 S_2 = S_1 + k_1 * v_1^T，S_3 = S_2 + k_2 * v_2^T ...
+
+就像一个**笔记本**：每次来一个新 token，你只需要**往笔记本上加一条记录**，
+而不是把之前所有记录重新抄一遍！
+
+这就是 **RNN 递推形式**：
+```
+S_t = S_{t-1} + phi(k_t) * v_t^T    ← 增量更新笔记本
+z_t = z_{t-1} + phi(k_t)             ← 更新归一化因子
+o_t = phi(q_t)^T * S_t / (phi(q_t)^T * z_t)  ← 查笔记本
+```
+
+### 3.2 两种模式
+
+| 模式 | 适用场景 | 优势 |
+|------|----------|------|
+| **Parallel**（并行）| 训练 | 利用 GPU 并行能力，一次算完 |
+| **Recurrent**（递推）| 推理 | 逐步生成，固定大小隐状态，无需 KV Cache |
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+
+def phi_elu(x):
+    return F.elu(x) + 1
+```
+
+```python
+# ===== 3.3 Recurrent 形式实现 =====
+
+def linear_attention_recurrent(Q, K, V, phi_fn=phi_elu):
+    """
+    Linear Attention 的 RNN 递推形式
+
+    每步只需要：
+    1. 更新隐状态 S（d×d 矩阵）：S += phi(k_t) * v_t^T
+    2. 更新归一化因子 z（d 维向量）：z += phi(k_t)
+    3. 用 phi(q_t) 查询隐状态得到输出
+
+    推理时每步复杂度：O(d²)，不随序列长度增长！
+    """
+    N, d = Q.shape
+    Q_phi = phi_fn(Q)  # (N, d)
+    K_phi = phi_fn(K)  # (N, d)
+
+    # 初始化隐状态
+    S = torch.zeros(d, d)  # "笔记本"：d×d 矩阵
+    z = torch.zeros(d)      # 归一化因子
+
+    outputs = []
+    for t in range(N):
+        # 第一步：增量更新笔记本
+        S = S + torch.outer(K_phi[t], V[t])  # S += k_t * v_t^T
+        z = z + K_phi[t]                      # z += k_t
+
+        # 第二步：查笔记本
+        numerator = Q_phi[t] @ S              # (d,) @ (d,d) → (d,)
+        denominator = (Q_phi[t] @ z).clamp(min=1e-6)  # 标量
+        o_t = numerator / denominator
+
+        outputs.append(o_t)
+
+    return torch.stack(outputs, dim=0)  # (N, d)
+```
+
+```python
+# ===== 3.4 Parallel 形式实现（因果版） =====
+
+def linear_attention_parallel(Q, K, V, phi_fn=phi_elu):
+    """
+    Linear Attention 的 Parallel（并行）形式
+
+    显式构建因果注意力矩阵，一次矩阵乘法算完
+    训练时用这个，可以充分利用 GPU 并行
+    """
+    N, d = Q.shape
+    Q_phi = phi_fn(Q)  # (N, d)
+    K_phi = phi_fn(K)  # (N, d)
+
+    # 线性核的注意力分数
+    attn_raw = Q_phi @ K_phi.T  # (N, N)
+
+    # 因果掩码：上三角清零
+    causal_mask = torch.triu(torch.ones(N, N, dtype=torch.bool), diagonal=1)
+    attn_raw = attn_raw.masked_fill(causal_mask, 0.0)
+
+    # 按行归一化
+    attn_weights = attn_raw / attn_raw.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+
+    output = attn_weights @ V
+    return output
+```
+
+```python
+# ===== 3.5 验证两种形式的数值一致性 =====
+
+N, d = 32, 16
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+
+out_recurrent = linear_attention_recurrent(Q, K, V)
+out_parallel = linear_attention_parallel(Q, K, V)
+
+print("=== 数值一致性验证 ===")
+print(f"Recurrent 输出形状: {out_recurrent.shape}")
+print(f"Parallel  输出形状: {out_parallel.shape}")
+
+max_diff = (out_recurrent - out_parallel).abs().max().item()
+print(f"\n最大误差: {max_diff:.2e}")
+print(f"是否一致: {torch.allclose(out_recurrent, out_parallel, atol=1e-5)}")
+print("\n两种形式数学上完全等价！")
+print("  训练时 → 用 Parallel 形式，利用 GPU 并行")
+print("  推理时 → 用 Recurrent 形式，固定内存")
+```
+
+```python
+# ===== 3.6 隐状态 S 的可视化 =====
+# S 就是模型的"记忆"，它存储了到目前为止所有信息的压缩
+
+N, d = 20, 8
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+
+K_phi = phi_elu(K)
+
+# 记录每一步的隐状态
+states = []
+S = torch.zeros(d, d)
+for t in range(N):
+    S = S + torch.outer(K_phi[t], V[t])
+    states.append(S.clone())
+
+# 可视化隐状态的变化
+fig, axes = plt.subplots(2, 5, figsize=(16, 7))
+for idx, t in enumerate([0, 2, 5, 9, 14, 15, 16, 17, 18, 19]):
+    ax = axes[idx // 5, idx % 5]
+    im = ax.imshow(states[t].detach().numpy(), cmap='RdBu', vmin=-5, vmax=5)
+    ax.set_title(f't={t}', fontsize=10)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+plt.suptitle(f'隐状态 S (d×d = {d}×{d}) 随时间步的变化\n越往后，S 积累的信息越多', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print(f"隐状态大小：{d}×{d} = {d*d} 个参数（固定！不随序列长度增长）")
+print(f"相比 KV Cache：N×d = {N}×{d} = {N*d} 个参数（线性增长！）")
+```
+
+```python
+# ===== 3.7 推理内存对比：KV Cache vs 固定隐状态 =====
+
+d = 64  # 典型的 head_dim
+N_list = [128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+kv_cache_size = [2 * N * d for N in N_list]  # KV Cache: 存K和V，每个是 N×d
+hidden_state_size = [d * d for _ in N_list]   # 固定隐状态: d×d
+
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(N_list, [s/1024 for s in kv_cache_size], 'ro-', linewidth=2, markersize=8,
+        label=f'Softmax: KV Cache (2×N×{d})')
+ax.plot(N_list, [s/1024 for s in hidden_state_size], 'bs-', linewidth=2, markersize=8,
+        label=f'Linear: 固定隐状态 ({d}×{d}={d*d})')
+ax.set_xlabel('序列长度 N')
+ax.set_ylabel('内存 (K 个参数)')
+ax.set_title('推理时的内存使用对比\n(每个注意力头)')
+ax.legend()
+ax.grid(True, alpha=0.3)
+ax.set_xscale('log', base=2)
+plt.tight_layout()
+plt.show()
+
+print(f"当 N={N_list[-1]} 时:")
+print(f"  KV Cache 大小: {kv_cache_size[-1]:,} 个参数")
+print(f"  固定隐状态:    {hidden_state_size[-1]:,} 个参数")
+print(f"  节省了 {kv_cache_size[-1] / hidden_state_size[-1]:.0f} 倍内存！")
+```
+
+### 第3章 关键要点
+
+| | Parallel 形式 | Recurrent 形式 |
+|---|---|---|
+| **用途** | 训练 | 推理 |
+| **计算方式** | 矩阵乘法一次算完 | 逐步递推 |
+| **隐状态** | 无 | S_t (d×d)，固定大小 |
+| **复杂度** | O(N²d) 或 O(Nd²) | 每步 O(d²) |
+
+**核心洞察**：Linear Attention = 线性 RNN
+- S_t = S_{t-1} + k_t * v_t^T （累加更新）
+- 这个 d×d 的"笔记本"就是模型的全部记忆
+- **优点**：推理时内存固定，速度恒定
+- **缺点**：笔记本容量有限(d²)，信息只增不减 → **下一章解决这个问题**
+
+---
+
+
+## 第4章：遗忘的力量 — RetNet 的指数衰减
+
+### 4.1 直觉比喻：不会扔笔记的学生
+
+上一章的 Linear Attention 有一个严重问题：
+
+> 隐状态 S 只做**累加**（S += k*v^T），永远不会删除旧信息
+
+就像一个学生从不扔笔记：
+- 上学期的笔记、去年的笔记、小学的笔记... 全部堆在一起
+- 当他想找"昨天的数学作业"时，被海量旧笔记淹没
+- 重要的新信息被稀释在旧信息的汪洋中
+
+**解决方案：让旧信息自然衰减！**
+
+RetNet 的做法：每一步都把旧信息乘以一个衰减因子 γ (0 < γ < 1)：
+
+```
+S_t = γ * S_{t-1} + k_t * v_t^T
+```
+
+- γ = 0.99 → 100步后旧信息衰减到 0.99^100 ≈ 0.37（还剩37%）
+- γ = 0.95 → 100步后旧信息衰减到 0.95^100 ≈ 0.006（几乎没了）
+- γ = 1.0 → 就是原始 Linear Attention（不衰减）
+
+### 4.2 数学公式
+
+**Recurrent 形式**：
+$$S_t = \gamma \cdot S_{t-1} + \phi(k_t) \cdot v_t^T$$
+$$o_t = \phi(q_t)^T \cdot S_t$$
+
+**Parallel 形式**（关键是构造衰减矩阵 D）：
+$$D_{ij} = \gamma^{i-j} \quad \text{(当 i >= j 时，否则为0)}$$
+$$O = (Q_\phi K_\phi^T \odot D) \cdot V$$
+
+D 矩阵的含义：距离越远的token对当前的影响越小
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+
+def phi_elu(x):
+    return F.elu(x) + 1
+```
+
+```python
+# ===== 4.3 RetNet Recurrent 实现 =====
+
+def retnet_recurrent(Q, K, V, gamma=0.95, phi_fn=phi_elu):
+    """
+    RetNet 的 Recurrent 形式
+
+    与 Linear Attention 的区别只有一行：S = gamma * S + ...
+    gamma 让旧信息指数衰减，新信息权重更大
+    """
+    N, d = Q.shape
+    Q_phi = phi_fn(Q)
+    K_phi = phi_fn(K)
+
+    S = torch.zeros(d, d)   # 隐状态（笔记本）
+    outputs = []
+
+    for t in range(N):
+        # 关键区别：旧信息乘以 gamma 衰减！
+        S = gamma * S + torch.outer(K_phi[t], V[t])
+
+        # 查询（这里简化掉归一化，RetNet 原文也不做归一化）
+        o_t = Q_phi[t] @ S
+        outputs.append(o_t)
+
+    return torch.stack(outputs, dim=0)
+```
+
+```python
+# ===== 4.4 RetNet Parallel 实现 =====
+
+def build_decay_matrix(N, gamma):
+    """
+    构建衰减矩阵 D
+
+    D[i][j] = gamma^(i-j)  当 i >= j（因果，且距离越远衰减越多）
+    D[i][j] = 0            当 i < j （不能看未来）
+    """
+    # positions[i] - positions[j] = i - j
+    positions = torch.arange(N, dtype=torch.float32)
+    # D[i,j] = gamma^(i-j)，只保留下三角
+    D = gamma ** (positions.unsqueeze(1) - positions.unsqueeze(0))
+    # 上三角清零（因果掩码）
+    causal_mask = torch.triu(torch.ones(N, N, dtype=torch.bool), diagonal=1)
+    D = D.masked_fill(causal_mask, 0.0)
+    return D
+
+def retnet_parallel(Q, K, V, gamma=0.95, phi_fn=phi_elu):
+    """
+    RetNet 的 Parallel 形式
+
+    核心：注意力矩阵 = (Q_phi @ K_phi^T) * D（逐元素乘衰减矩阵）
+    """
+    N, d = Q.shape
+    Q_phi = phi_fn(Q)
+    K_phi = phi_fn(K)
+
+    # 衰减矩阵
+    D = build_decay_matrix(N, gamma)
+
+    # 注意力 = 线性核注意力 × 衰减
+    attn = (Q_phi @ K_phi.T) * D  # (N, N)
+    output = attn @ V              # (N, d)
+    return output
+```
+
+```python
+# ===== 4.5 验证 Recurrent 和 Parallel 形式的一致性 =====
+
+N, d = 32, 16
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+gamma = 0.95
+
+out_rec = retnet_recurrent(Q, K, V, gamma=gamma)
+out_par = retnet_parallel(Q, K, V, gamma=gamma)
+
+max_diff = (out_rec - out_par).abs().max().item()
+print(f"RetNet Recurrent vs Parallel 最大误差: {max_diff:.2e}")
+print(f"一致性: {torch.allclose(out_rec, out_par, atol=1e-4)}")
+```
+
+```python
+# ===== 4.6 可视化衰减矩阵 D =====
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+for ax, g in zip(axes, [0.99, 0.95, 0.8]):
+    D = build_decay_matrix(20, g)
+    im = ax.imshow(D.numpy(), cmap='Blues', vmin=0, vmax=1)
+    ax.set_title(f'gamma = {g}\n(衰减{"慢" if g > 0.95 else "中等" if g > 0.85 else "快"})')
+    ax.set_xlabel('Key 位置 j')
+    ax.set_ylabel('Query 位置 i')
+    plt.colorbar(im, ax=ax)
+
+plt.suptitle('衰减矩阵 D: gamma^(i-j)\n对角线=1（当前token），越远越小', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print("gamma 越小 → 衰减越快 → 模型更关注近处的 token")
+print("gamma 越大 → 衰减越慢 → 模型可以'记住'更远的信息")
+```
+
+```python
+# ===== 4.7 对比实验：有衰减 vs 无衰减 =====
+# 在一个简单任务上展示衰减的作用
+
+# 构造一个场景：序列中有"旧信号"和"新信号"
+# 我们希望模型关注新信号，忽略旧信号
+
+N, d = 50, 8
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.zeros(N, d)
+
+# 在位置 5 放一个"旧信号"
+V[5] = torch.ones(d) * 5.0
+# 在位置 45 放一个"新信号"
+V[45] = torch.ones(d) * 5.0
+
+# 查询位置 48 的输出（应该更关注位置45的新信号）
+def linear_attention_recurrent_no_norm(Q, K, V, phi_fn=phi_elu):
+    N, d = Q.shape
+    Q_phi, K_phi = phi_fn(Q), phi_fn(K)
+    S = torch.zeros(d, d)
+    outputs = []
+    for t in range(N):
+        S = S + torch.outer(K_phi[t], V[t])
+        outputs.append(Q_phi[t] @ S)
+    return torch.stack(outputs)
+
+out_no_decay = linear_attention_recurrent_no_norm(Q, K, V)
+out_decay_95 = retnet_recurrent(Q, K, V, gamma=0.95)
+out_decay_80 = retnet_recurrent(Q, K, V, gamma=0.80)
+
+# 看位置48的输出的"能量"
+idx = 48
+e_no_decay = out_no_decay[idx].norm().item()
+e_decay_95 = out_decay_95[idx].norm().item()
+e_decay_80 = out_decay_80[idx].norm().item()
+
+print(f"位置 {idx} 的输出能量（应主要来自位置45的新信号）:")
+print(f"  无衰减 (gamma=1.0): {e_no_decay:.3f}  ← 旧信号(位置5)和新信号(位置45)混在一起")
+print(f"  慢衰减 (gamma=0.95): {e_decay_95:.3f}")
+print(f"  快衰减 (gamma=0.80): {e_decay_80:.3f}")
+
+# 可视化输出能量随位置的变化
+fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+for ax, out, title in zip(axes,
+    [out_no_decay, out_decay_95, out_decay_80],
+    ['无衰减 (gamma=1.0)', '慢衰减 (gamma=0.95)', '快衰减 (gamma=0.80)']):
+    energies = out.detach().norm(dim=-1).numpy()
+    ax.plot(energies, linewidth=2)
+    ax.axvline(x=5, color='r', linestyle='--', alpha=0.5, label='旧信号(pos=5)')
+    ax.axvline(x=45, color='g', linestyle='--', alpha=0.5, label='新信号(pos=45)')
+    ax.set_title(title)
+    ax.set_xlabel('位置')
+    ax.set_ylabel('输出能量')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+plt.suptitle('衰减因子对旧/新信号的影响', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print("\n有衰减时，旧信号的影响会自然减弱，模型更容易关注近期信息")
+```
+
+```python
+# ===== 4.8 Multi-Scale Retention =====
+# RetNet 的一个巧妙设计：不同注意力头使用不同的 gamma
+# 有的头"记性好"（gamma大），有的头"记性差"（gamma小）
+# 组合起来就能同时捕捉短程和长程依赖
+
+n_heads = 4
+gammas = [0.99, 0.95, 0.9, 0.8]
+
+print("Multi-Scale Retention: 每个头使用不同的衰减率")
+print("="*50)
+for h, g in enumerate(gammas):
+    half_life = -np.log(2) / np.log(g) if g < 1 else float('inf')
+    memory_100 = g ** 100 * 100
+    print(f"  Head {h}: gamma={g:.2f}, 半衰期={half_life:.1f}步, 100步后信号剩余{g**100*100:.1f}%")
+
+print("\n这样模型可以同时捕捉：")
+print("  短程依赖（gamma=0.8 的头）")
+print("  长程依赖（gamma=0.99 的头）")
+```
+
+### 第4章 关键要点
+
+| | 纯 Linear Attention | RetNet |
+|---|---|---|
+| **状态更新** | S += k*v^T | S = γ*S + k*v^T |
+| **旧信息** | 永远累积 | 指数衰减 |
+| **γ** | 无 | 固定超参数（0.8~0.99） |
+| **Multi-Scale** | 无 | 不同头不同 γ |
+
+**RetNet 的贡献**：
+1. 引入指数衰减 γ，解决"旧信息不消失"问题
+2. 三种并行模式：Parallel / Recurrent / Chunkwise
+3. Multi-Scale Retention：不同头不同衰减率
+
+**局限**：γ 是**固定的超参数**，不能根据内容动态调整
+→ 下一章的 GLA 解决这个问题！
+
+---
+
+
+## 第5章：数据驱动的门控 — GLA (Gated Linear Attention)
+
+### 5.1 直觉比喻：从"固定遗忘速度"到"智能遗忘"
+
+RetNet 的衰减因子 γ 是固定的 — 不管内容是什么，都以同样的速度遗忘。
+
+但现实中，遗忘应该是**内容相关的**：
+- 读到"The cat sat on the mat"中的"the" → 这个信息不太重要，**快速遗忘**
+- 读到"The password is ABC123" → 这个信息很重要，**慢慢遗忘**
+
+GLA 的做法：让衰减因子由输入内容动态决定！
+
+```
+RetNet:  S_t = γ      * S_{t-1} + k_t * v_t^T    ← γ 是固定数
+GLA:     S_t = G_t     * S_{t-1} + k_t * v_t^T    ← G_t 由输入动态生成
+```
+
+G_t 可以是：
+- 一个标量（最简单）
+- 一个向量（每个维度不同的遗忘速率）
+- 一个矩阵（最灵活，但计算量大）
+
+### 5.2 数学公式
+
+**最一般的形式**（矩阵门控）：
+$$S_t = \text{diag}(\alpha_t) \cdot S_{t-1} \cdot \text{diag}(\beta_t) + k_t v_t^T$$
+
+**简化形式**（GLA 论文中主要用的）：
+$$S_t = G_t \odot S_{t-1} + k_t v_t^T$$
+
+其中 $G_t = \sigma(W_g x_t)$，$\sigma$ 是 sigmoid 函数（输出在0到1之间）
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+
+def phi_elu(x):
+    return F.elu(x) + 1
+```
+
+```python
+# ===== 5.3 GLA Recurrent 实现 =====
+
+def gla_recurrent(Q, K, V, alpha, beta):
+    """
+    GLA (Gated Linear Attention) 的 Recurrent 形式
+
+    参数:
+        Q, K, V: (N, d) — 查询、键、值
+        alpha: (N, d) — 左门控向量（控制隐状态行维度的遗忘）
+        beta:  (N, d) — 右门控向量（控制隐状态列维度的遗忘）
+
+    更新规则:
+        S_t = diag(alpha_t) @ S_{t-1} @ diag(beta_t) + k_t v_t^T
+        o_t = q_t^T @ S_t
+
+    与 RetNet 的区别：gamma 变成了动态的 alpha_t, beta_t
+    """
+    N, d = Q.shape
+
+    S = torch.zeros(d, d)  # 隐状态
+    outputs = []
+
+    for t in range(N):
+        # 门控衰减：每个维度可以有不同的遗忘速率
+        # diag(alpha) @ S @ diag(beta) 等价于 alpha.unsqueeze(1) * S * beta.unsqueeze(0)
+        S = alpha[t].unsqueeze(1) * S * beta[t].unsqueeze(0) + torch.outer(K[t], V[t])
+        o_t = Q[t] @ S
+        outputs.append(o_t)
+
+    return torch.stack(outputs, dim=0)
+```
+
+```python
+# ===== 5.4 简化版 GLA（标量门控，更易理解） =====
+
+def gla_scalar_recurrent(Q, K, V, gates):
+    """
+    简化版 GLA：每步一个标量门控值
+
+    gates: (N,) — 每个时间步的遗忘门控，值在 (0, 1) 之间
+    当 gates 全部相同时，就退化为 RetNet
+    """
+    N, d = Q.shape
+    Q_phi = phi_elu(Q)
+    K_phi = phi_elu(K)
+
+    S = torch.zeros(d, d)
+    outputs = []
+
+    for t in range(N):
+        g = gates[t]  # 标量门控
+        S = g * S + torch.outer(K_phi[t], V[t])
+        o_t = Q_phi[t] @ S
+        outputs.append(o_t)
+
+    return torch.stack(outputs, dim=0)
+```
+
+```python
+# ===== 5.5 动态门控的威力演示 =====
+# 场景：序列中有"重要信号"和"噪声"
+# 智能门控应该在遇到重要信号时"打开记忆"，遇到噪声时"快速遗忘"
+
+N, d = 60, 8
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.zeros(N, d)
+
+# 在位置 10 放重要信息A
+V[10] = torch.randn(d) * 3.0
+# 在位置 20-30 放大量噪声
+V[20:30] = torch.randn(10, d) * 2.0
+# 在位置 40 放重要信息B
+V[40] = torch.randn(d) * 3.0
+
+# 方案1: RetNet 固定衰减
+def retnet_recurrent_simple(Q, K, V, gamma=0.95):
+    N, d = Q.shape
+    Q_phi, K_phi = phi_elu(Q), phi_elu(K)
+    S = torch.zeros(d, d)
+    outputs = []
+    for t in range(N):
+        S = gamma * S + torch.outer(K_phi[t], V[t])
+        outputs.append(Q_phi[t] @ S)
+    return torch.stack(outputs)
+
+# 方案2: GLA 智能门控
+# 模拟一个"聪明"的门控：在噪声区域快速遗忘，在信号区域慢遗忘
+smart_gates = torch.ones(N) * 0.95  # 默认慢遗忘
+smart_gates[20:30] = 0.5             # 噪声区域快速遗忘
+smart_gates[10] = 0.99               # 重要信号区域保持记忆
+smart_gates[40] = 0.99               # 重要信号区域保持记忆
+
+out_retnet = retnet_recurrent_simple(Q, K, V, gamma=0.95)
+out_gla = gla_scalar_recurrent(Q, K, V, gates=smart_gates)
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+
+# 门控值可视化
+ax = axes[0]
+ax.plot(smart_gates.numpy(), 'g-', linewidth=2)
+ax.axhline(y=0.95, color='r', linestyle='--', alpha=0.5, label='RetNet (固定γ=0.95)')
+ax.fill_between(range(20, 30), 0, 1, alpha=0.2, color='red', label='噪声区域')
+ax.axvline(x=10, color='blue', linestyle=':', alpha=0.5, label='信号A')
+ax.axvline(x=40, color='blue', linestyle=':', alpha=0.5, label='信号B')
+ax.set_title('门控值 (GLA 可动态调节)')
+ax.set_xlabel('位置')
+ax.set_ylabel('gate 值')
+ax.legend(fontsize=7)
+ax.grid(True, alpha=0.3)
+
+# RetNet 输出能量
+ax = axes[1]
+e = out_retnet.detach().norm(dim=-1).numpy()
+ax.plot(e, 'r-', linewidth=2)
+ax.set_title('RetNet (固定 γ=0.95)')
+ax.set_xlabel('位置')
+ax.set_ylabel('输出能量')
+ax.grid(True, alpha=0.3)
+
+# GLA 输出能量
+ax = axes[2]
+e = out_gla.detach().norm(dim=-1).numpy()
+ax.plot(e, 'b-', linewidth=2)
+ax.set_title('GLA (智能门控)')
+ax.set_xlabel('位置')
+ax.set_ylabel('输出能量')
+ax.grid(True, alpha=0.3)
+
+plt.suptitle('RetNet vs GLA：处理"信号+噪声"序列\nGLA 可以在噪声区域快速遗忘', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print("GLA 的智能门控可以根据内容动态决定遗忘速度：")
+print("  遇到噪声 → 快速遗忘（gate 接近 0）")
+print("  遇到重要信号 → 慢慢遗忘（gate 接近 1）")
+```
+
+```python
+# ===== 5.6 Chunkwise 并行训练思想 =====
+# GLA 论文的另一个重要贡献：Chunkwise 并行训练算法
+#
+# 思路：把长序列切成小块（chunk），块内并行计算，块间传递隐状态
+#
+# 这里给出简化版实现来展示核心思想
+
+def gla_chunkwise(Q, K, V, gates, chunk_size=8):
+    """
+    GLA Chunkwise 形式（简化版）
+
+    把长度 N 的序列切成 N/C 个大小为 C 的块：
+    - 块内：用 parallel 形式并行计算（像 Softmax Attention 一样快）
+    - 块间：用 recurrent 形式传递隐状态（像 RNN 一样省内存）
+
+    这平衡了 parallel 的速度和 recurrent 的内存效率
+    """
+    N, d = Q.shape
+    Q_phi = phi_elu(Q)
+    K_phi = phi_elu(K)
+    C = chunk_size
+
+    S = torch.zeros(d, d)  # 跨块传递的隐状态
+    all_outputs = []
+
+    for start in range(0, N, C):
+        end = min(start + C, N)
+        chunk_len = end - start
+
+        # 取出当前块的数据
+        q_c = Q_phi[start:end]   # (C, d)
+        k_c = K_phi[start:end]   # (C, d)
+        v_c = V[start:end]       # (C, d)
+        g_c = gates[start:end]   # (C,)
+
+        # ---- 块内：parallel 计算 ----
+        # 块内的注意力矩阵 (C×C)，带因果掩码和衰减
+        attn_intra = q_c @ k_c.T  # (C, C)
+        causal = torch.triu(torch.ones(chunk_len, chunk_len, dtype=torch.bool), diagonal=1)
+        attn_intra = attn_intra.masked_fill(causal, 0.0)
+        out_intra = attn_intra @ v_c  # (C, d) ← 块内贡献
+
+        # ---- 块间：用上一个块传来的隐状态 S ----
+        out_inter = q_c @ S  # (C, d) ← 历史块的贡献
+
+        # 合并
+        out_chunk = out_intra + out_inter
+        all_outputs.append(out_chunk)
+
+        # ---- 更新隐状态传给下一个块 ----
+        for t in range(chunk_len):
+            g = g_c[t]
+            S = g * S + torch.outer(k_c[t], v_c[t])
+
+    return torch.cat(all_outputs, dim=0)
+
+# 验证 chunkwise 和 recurrent 的一致性
+N, d = 32, 8
+Q = torch.randn(N, d)
+K = torch.randn(N, d)
+V = torch.randn(N, d)
+gates = torch.sigmoid(torch.randn(N))  # 随机门控值
+
+out_rec = gla_scalar_recurrent(Q, K, V, gates)
+out_chunk = gla_chunkwise(Q, K, V, gates, chunk_size=8)
+
+print("注意: 简化版 chunkwise 没有完全实现块内衰减，")
+print("      所以与 recurrent 有一定误差，这里只是展示核心思想")
+print(f"Chunkwise 输出形状: {out_chunk.shape}")
+```
+
+```python
+# ===== 5.7 GLA vs RetNet 对比总结 =====
+
+print("=" * 60)
+print("GLA vs RetNet 对比")
+print("=" * 60)
+print(f"{'特性':<20} {'RetNet':<20} {'GLA':<20}")
+print("-" * 60)
+print(f"{'衰减方式':<20} {'固定 γ':<20} {'动态 G_t':<20}")
+print(f"{'门控粒度':<20} {'标量（每头一个）':<20} {'向量/矩阵（每维度）':<20}")
+print(f"{'内容感知':<20} {'否':<20} {'是':<20}")
+print(f"{'训练算法':<20} {'Parallel/Chunk':<20} {'FlashLinearAttn':<20}")
+print(f"{'推理复杂度':<20} {'O(d²)/步':<20} {'O(d²)/步':<20}")
+print("-" * 60)
+print("GLA 通过让遗忘速率依赖于输入内容，")
+print("使模型能根据上下文智能地管理有限的隐状态容量。")
+```
+
+### 第5章 关键要点
+
+| | RetNet | GLA |
+|---|---|---|
+| **衰减因子** | 固定 γ（超参数） | 动态 G_t = σ(Wx_t)（可学习） |
+| **遗忘策略** | 所有信息均匀衰减 | 根据内容选择性遗忘 |
+| **训练** | Parallel / Chunkwise | FlashLinearAttention (硬件优化) |
+
+**GLA 的核心创新**：
+1. 数据依赖的门控 → 智能遗忘
+2. 硬件高效的 Chunkwise 训练 → 比 FlashAttention-2 更快
+3. 支持 2K→20K+ 的长度泛化
+
+**但 GLA 仍有一个问题**：
+只能"遗忘"旧信息，不能精确**覆写**旧信息
+→ 下一章的 DeltaNet 解决这个问题！
+
+---
+
+
+## 第6章：精确覆写 — DeltaNet 的 Delta Rule
+
+### 6.1 直觉比喻：黑板 vs 笔记本
+
+之前的所有方法（Linear Attention, RetNet, GLA）都像在**笔记本**上写字：
+- 只能往后面**加**新内容
+- 旧内容要么永远在（Linear Attention），要么慢慢**变淡**（RetNet/GLA）
+- 但不能**精确擦除**某条旧信息并写入新信息
+
+DeltaNet 像一块**黑板**：
+- 你可以先**擦掉**特定位置的旧内容
+- 再在同样位置**写上**新内容
+- 这就是 Delta Rule（差分学习规则）
+
+**实际例子**：
+- 句子1："小明的帽子是红色的"→ 记住 (小明的帽子 → 红色)
+- 句子2："小明把帽子换成蓝色了"→ 先**擦除** (小明的帽子 → 红色)，再**写入** (小明的帽子 → 蓝色)
+
+之前的方法做不到精确擦除，只能等旧信息慢慢衰减！
+
+### 6.2 数学公式
+
+**Delta Rule 更新**：
+$$S_t = S_{t-1} + \beta_t \cdot (v_t - S_{t-1}^T k_t) \cdot k_t^T$$
+
+拆解理解：
+1. $S_{t-1}^T k_t$ — 用当前 key 去查旧笔记本，取出"旧 value"
+2. $v_t - S_{t-1}^T k_t$ — 新 value 减去旧 value = **差分（delta）**
+3. $\beta_t \cdot \text{delta} \cdot k_t^T$ — 把差分写回笔记本
+
+效果：**精确覆写**关联到同一个 key 的 value！
+
+
+### 6.2.1 Delta Rule 公式完全展开推导
+
+上面的公式 $S_t = S_{t-1} + \beta_t \cdot (v_t - S_{t-1}^T k_t) \cdot k_t^T$ 只有一行，但背后藏着很多东西。
+下面我们**不跳任何步骤**，从最基础的外积运算开始，一步步展开所有矩阵乘法，彻底理解这个公式为什么能实现"精确覆写"。
+
+---
+
+#### Step 0：外积到底是什么？
+
+后面整个 Delta Rule 都建立在"外积"这个操作上，必须先彻底搞清楚。
+
+假设 d=3，有两个列向量：
+$$k = \begin{bmatrix} k_1 \\ k_2 \\ k_3 \end{bmatrix}, \quad v = \begin{bmatrix} v_1 \\ v_2 \\ v_3 \end{bmatrix}$$
+
+它们的**外积** $k \cdot v^T$ 是一个 3×3 矩阵，每个元素就是两个分量直接相乘：
+
+$$k \cdot v^T = \begin{bmatrix} k_1 \\ k_2 \\ k_3 \end{bmatrix} \begin{bmatrix} v_1 & v_2 & v_3 \end{bmatrix} = \begin{bmatrix} k_1 v_1 & k_1 v_2 & k_1 v_3 \\ k_2 v_1 & k_2 v_2 & k_2 v_3 \\ k_3 v_1 & k_3 v_2 & k_3 v_3 \end{bmatrix}$$
+
+这个矩阵把 k 和 v 的信息"编码"到了一张二维表里。这就是隐状态 S 存储 key-value 对的方式。
+
+---
+
+#### Step 1：写入一对 (k, v) 后读取——逐元素展开
+
+现在只存一对 key-value。初始 $S = \mathbf{0}$（全零矩阵）。
+
+**写入**：$S = k \cdot v^T$
+
+**读取**：用同一个 k 去查——计算 $S^T k$
+
+先写出 $S^T$（转置 = 行列互换）：
+
+$$(k \cdot v^T)^T = v \cdot k^T = \begin{bmatrix} v_1 k_1 & v_1 k_2 & v_1 k_3 \\ v_2 k_1 & v_2 k_2 & v_2 k_3 \\ v_3 k_1 & v_3 k_2 & v_3 k_3 \end{bmatrix}$$
+
+然后 $S^T k$ 就是 $S^T$ 的每一行分别和 k 做点积：
+
+$$S^T k \text{ 的第 1 个元素} = v_1 k_1 \cdot k_1 + v_1 k_2 \cdot k_2 + v_1 k_3 \cdot k_3 = v_1 (k_1^2 + k_2^2 + k_3^2) = v_1 \cdot \|k\|^2$$
+
+$$S^T k \text{ 的第 2 个元素} = v_2 k_1 \cdot k_1 + v_2 k_2 \cdot k_2 + v_2 k_3 \cdot k_3 = v_2 \cdot \|k\|^2$$
+
+$$S^T k \text{ 的第 3 个元素} = v_3 \cdot \|k\|^2$$
+
+所以：
+
+$$\boxed{S^T k = v \cdot \|k\|^2}$$
+
+**如果 k 是单位向量**（$\|k\| = 1$，即 $k_1^2 + k_2^2 + k_3^2 = 1$），那么：
+
+$$S^T k = v \cdot 1 = v \quad \checkmark \text{ 完美取回原始 value！}$$
+
+**这就是 DeltaNet 要求 K 做 L2 归一化的根本原因**——只有单位向量才能保证"写什么就读回什么"。
+
+---
+
+#### Step 2：同一个 key 存两次——累加方式的灾难
+
+这是理解 Delta Rule 必要性的关键场景。
+
+**先存 (k, v\_old)，再存 (k, v\_new)**，用普通 Linear Attention 的累加方式：
+
+$$S = k \cdot v_{old}^T + k \cdot v_{new}^T$$
+
+提取公因子：
+
+$$S = k \cdot (v_{old} + v_{new})^T$$
+
+用 k 去读取（k 是单位向量）：
+
+$$S^T k = (v_{old} + v_{new}) \cdot \|k\|^2 = v_{old} + v_{new}$$
+
+**你想要的是最新值 $v_{new}$，但得到的是 $v_{old} + v_{new}$！旧值完全没被覆盖，而是叠加在一起了。**
+
+用 d=2 的具体数字来看：
+
+$$k = \begin{bmatrix} 1 \\ 0 \end{bmatrix} \text{（单位向量）}, \quad v_{old} = \begin{bmatrix} 3 \\ 5 \end{bmatrix}, \quad v_{new} = \begin{bmatrix} -2 \\ 7 \end{bmatrix}$$
+
+$$S = k \cdot v_{old}^T + k \cdot v_{new}^T = \begin{bmatrix} 3 & 5 \\ 0 & 0 \end{bmatrix} + \begin{bmatrix} -2 & 7 \\ 0 & 0 \end{bmatrix} = \begin{bmatrix} 1 & 12 \\ 0 & 0 \end{bmatrix}$$
+
+读取：$S^T k = \begin{bmatrix} 1 & 0 \\ 12 & 0 \end{bmatrix} \begin{bmatrix} 1 \\ 0 \end{bmatrix} = \begin{bmatrix} 1 \\ 12 \end{bmatrix}$
+
+期望得到 $v_{new} = [-2, 7]^T$，实际得到 $[1, 12]^T = v_{old} + v_{new}$。**完全错误！**
+
+---
+
+#### Step 3：Delta Rule 如何解决——完全符号化推导
+
+同样的场景：$S_{old}$ 里已经存了 $(k, v_{old})$，现在要更新为 $(k, v_{new})$。
+
+$$S_{old} = k \cdot v_{old}^T$$
+
+Delta Rule 更新公式（取 $\beta = 1$）：
+
+$$S_{new} = S_{old} + k \cdot (v_{new} - S_{old}^T k)^T$$
+
+注意代码中写的是 `torch.outer(k_t, delta)`，即外积的第一个参数是 k，第二个是 delta。
+
+**第 3a 步：计算 $S_{old}^T k$（查出旧值）**
+
+由 Step 1 的结论，$S_{old}^T k = v_{old} \cdot \|k\|^2$。因为 k 是单位向量：
+
+$$S_{old}^T k = v_{old}$$
+
+**第 3b 步：计算差分 delta**
+
+$$\delta = v_{new} - S_{old}^T k = v_{new} - v_{old}$$
+
+**第 3c 步：构造更新项（外积）**
+
+$$k \cdot \delta^T = k \cdot (v_{new} - v_{old})^T$$
+
+**第 3d 步：得到新的 S**
+
+$$S_{new} = S_{old} + k \cdot (v_{new} - v_{old})^T$$
+
+$$= k \cdot v_{old}^T + k \cdot (v_{new} - v_{old})^T$$
+
+$$= k \cdot \left[ v_{old}^T + (v_{new} - v_{old})^T \right]$$
+
+$$= k \cdot \left[ v_{old}^T + v_{new}^T - v_{old}^T \right]$$
+
+$$\boxed{= k \cdot v_{new}^T}$$
+
+**$v_{old}^T$ 和 $-v_{old}^T$ 完美抵消！$S_{new}$ 就好像从一开始就只存了 $(k, v_{new})$ 一样！**
+
+**第 3e 步：验证读取结果**
+
+$$S_{new}^T k = (k \cdot v_{new}^T)^T k = v_{new} \cdot (k^T k) = v_{new} \cdot 1 = v_{new} \quad \checkmark$$
+
+---
+
+#### Step 4：用 d=2 数值彻底验证
+
+$$k = \begin{bmatrix} 1 \\ 0 \end{bmatrix}, \quad v_{old} = \begin{bmatrix} 3 \\ 5 \end{bmatrix}, \quad v_{new} = \begin{bmatrix} -2 \\ 7 \end{bmatrix}$$
+
+**写入旧值后的 S：**
+
+$$S_{old} = k \cdot v_{old}^T = \begin{bmatrix} 1 \\ 0 \end{bmatrix} \begin{bmatrix} 3 & 5 \end{bmatrix} = \begin{bmatrix} 3 & 5 \\ 0 & 0 \end{bmatrix}$$
+
+**查出旧值：**
+
+$$S_{old}^T k = \begin{bmatrix} 3 & 0 \\ 5 & 0 \end{bmatrix} \begin{bmatrix} 1 \\ 0 \end{bmatrix} = \begin{bmatrix} 3 \\ 5 \end{bmatrix} = v_{old} \quad \checkmark$$
+
+**计算差分：**
+
+$$\delta = v_{new} - v_{old} = \begin{bmatrix} -2 \\ 7 \end{bmatrix} - \begin{bmatrix} 3 \\ 5 \end{bmatrix} = \begin{bmatrix} -5 \\ 2 \end{bmatrix}$$
+
+**构造更新项（注意外积方向是 k · δᵀ）：**
+
+$$k \cdot \delta^T = \begin{bmatrix} 1 \\ 0 \end{bmatrix} \begin{bmatrix} -5 & 2 \end{bmatrix} = \begin{bmatrix} -5 & 2 \\ 0 & 0 \end{bmatrix}$$
+
+**得到新 S：**
+
+$$S_{new} = \begin{bmatrix} 3 & 5 \\ 0 & 0 \end{bmatrix} + \begin{bmatrix} -5 & 2 \\ 0 & 0 \end{bmatrix} = \begin{bmatrix} -2 & 7 \\ 0 & 0 \end{bmatrix}$$
+
+**验证读取：**
+
+$$S_{new}^T k = \begin{bmatrix} -2 & 0 \\ 7 & 0 \end{bmatrix} \begin{bmatrix} 1 \\ 0 \end{bmatrix} = \begin{bmatrix} -2 \\ 7 \end{bmatrix} = v_{new} \quad \checkmark\checkmark\checkmark$$
+
+完美！旧值 $[3, 5]^T$ 被彻底替换为新值 $[-2, 7]^T$。
+
+---
+
+#### Step 5：多对记忆时，Delta Rule 不破坏其他记忆
+
+这是 Delta Rule 最精妙的性质。假设 S 里同时存了两对：
+
+$$S_{old} = k_a \cdot v_a^T + k_b \cdot v_b^T$$
+
+现在用 $k_a$ 做一次 delta rule 更新，把 $v_a$ 更新为 $v_a'$。
+
+**5a：查旧值**
+
+$$S_{old}^T k_a = (v_a \cdot k_a^T + v_b \cdot k_b^T) k_a = v_a \cdot \underbrace{(k_a^T k_a)}_{=1} + v_b \cdot \underbrace{(k_b^T k_a)}_{\cos\theta}$$
+
+其中 $\cos\theta = k_b^T k_a$ 是两个 key 的夹角余弦。**如果 $k_a \perp k_b$（正交），则 $\cos\theta = 0$**，查出的旧值精确等于 $v_a$。
+
+**5b：计算 delta 并更新**
+
+$$\delta = v_a' - v_a \quad \text{（正交情况下）}$$
+
+$$S_{new} = S_{old} + k_a \cdot \delta^T = k_a \cdot v_a^T + k_b \cdot v_b^T + k_a \cdot (v_a' - v_a)^T$$
+
+合并 $k_a$ 的项（和 Step 3 完全相同的消去）：
+
+$$S_{new} = k_a \cdot [v_a^T + v_a'^T - v_a^T] + k_b \cdot v_b^T = k_a \cdot v_a'^T + k_b \cdot v_b^T$$
+
+**结果**：$k_a$ 对应的值从 $v_a$ 变成了 $v_a'$，而 $k_b$ 对应的 $v_b$ **完全没有被改动**！
+
+**为什么不影响？** 因为更新项 $k_a \cdot \delta^T$ 只在 $k_a$ 方向上有分量。对另一个 key $k_b$：
+
+$$S_{new}^T k_b = S_{old}^T k_b + \delta \cdot \underbrace{(k_a^T k_b)}_{=0 \text{ (正交)}} = S_{old}^T k_b$$
+
+**正交的 key 互不干扰**。这也解释了为什么维度 d 越大，DeltaNet 的记忆能力越强——d 维空间里最多能放 d 个互相正交的 key。
+
+用 d=2 数值验证：
+
+$$k_a = \begin{bmatrix} 1 \\ 0 \end{bmatrix}, \quad k_b = \begin{bmatrix} 0 \\ 1 \end{bmatrix} \text{（正交）}, \quad v_a = \begin{bmatrix} 3 \\ 5 \end{bmatrix}, \quad v_b = \begin{bmatrix} 8 \\ 1 \end{bmatrix}, \quad v_a' = \begin{bmatrix} -2 \\ 7 \end{bmatrix}$$
+
+$$S_{old} = \begin{bmatrix} 3 & 5 \\ 0 & 0 \end{bmatrix} + \begin{bmatrix} 0 & 0 \\ 8 & 1 \end{bmatrix} = \begin{bmatrix} 3 & 5 \\ 8 & 1 \end{bmatrix}$$
+
+$$\delta = v_a' - v_a = [-5, 2]^T, \quad k_a \cdot \delta^T = \begin{bmatrix} -5 & 2 \\ 0 & 0 \end{bmatrix}$$
+
+$$S_{new} = \begin{bmatrix} 3 & 5 \\ 8 & 1 \end{bmatrix} + \begin{bmatrix} -5 & 2 \\ 0 & 0 \end{bmatrix} = \begin{bmatrix} -2 & 7 \\ 8 & 1 \end{bmatrix}$$
+
+验证 $k_a$：$S_{new}^T k_a = \begin{bmatrix} -2 & 8 \\ 7 & 1 \end{bmatrix} \begin{bmatrix} 1 \\ 0 \end{bmatrix} = \begin{bmatrix} -2 \\ 7 \end{bmatrix} = v_a' \quad \checkmark$
+
+验证 $k_b$：$S_{new}^T k_b = \begin{bmatrix} -2 & 8 \\ 7 & 1 \end{bmatrix} \begin{bmatrix} 0 \\ 1 \end{bmatrix} = \begin{bmatrix} 8 \\ 1 \end{bmatrix} = v_b \quad \checkmark$ **没被破坏！**
+
+---
+
+#### Step 6：$\beta < 1$ 时的效果——部分覆写
+
+当 $\beta < 1$ 时，Delta Rule 不做完全覆写，而是做"加权平均"。
+
+$$S_{new} = S_{old} + \beta \cdot k \cdot (v_{new} - S_{old}^T k)^T$$
+
+读取 $S_{new}^T k$（k 是单位向量，$S_{old}^T k = v_{old}$）：
+
+$$S_{new}^T k = S_{old}^T k + \beta \cdot (v_{new} - S_{old}^T k) \cdot \underbrace{(k^T k)}_{=1}$$
+
+$$= v_{old} + \beta \cdot (v_{new} - v_{old})$$
+
+$$\boxed{= (1 - \beta) \cdot v_{old} + \beta \cdot v_{new}}$$
+
+**这是旧值和新值的加权平均！**
+
+| $\beta$ 值 | 读取结果 | 含义 |
+|------------|---------|------|
+| $\beta = 1$ | $v_{new}$ | 完全覆写，旧值彻底消失 |
+| $\beta = 0.5$ | $0.5 \cdot v_{old} + 0.5 \cdot v_{new}$ | 新旧各取一半 |
+| $\beta = 0.1$ | $0.9 \cdot v_{old} + 0.1 \cdot v_{new}$ | 保守更新，主要保留旧值 |
+| $\beta = 0$ | $v_{old}$ | 完全不更新 |
+
+如果对同一个 key **反复用 $\beta < 1$ 做 delta rule**，旧值会指数衰减，逐渐收敛到新值。这和经典的 **Widrow-Hoff 学习规则**（1960 年提出）是同一回事——DeltaNet 把 60 年前的神经网络学习规则用到了 Attention 的隐状态更新里。
+
+---
+
+#### Step 7：Delta Rule 的本质——"删旧写新"的等价变换
+
+回到 $\beta=1$ 的情况，把公式做最后一步变形：
+
+$$S_{new} = S_{old} + k \cdot (v_{new} - S_{old}^T k)^T$$
+
+$$= S_{old} + k \cdot v_{new}^T - k \cdot (S_{old}^T k)^T$$
+
+因为 $S_{old}^T k = v_{old}$（查出的旧值），所以 $(S_{old}^T k)^T = v_{old}^T$：
+
+$$= S_{old} + k \cdot v_{new}^T - k \cdot v_{old}^T$$
+
+$$= (S_{old} - k \cdot v_{old}^T) + k \cdot v_{new}^T$$
+
+$$= \underbrace{(S_{old} - k \cdot v_{old}^T)}_{\text{从旧记忆中删除 (k, v\_old)}} + \underbrace{k \cdot v_{new}^T}_{\text{写入新的 (k, v\_new)}}$$
+
+**Delta Rule 的本质是"先精确删除旧的 key-value 对，再写入新的 key-value 对"。**
+
+只不过通过数学上的巧妙变换，把"删除 + 写入"两步合并成了一步"补差分"操作，既简洁又高效。
+
+```python
+# ===== 6.2.2 用代码验证上述推导的每一步 =====
+import torch
+import torch.nn.functional as F
+torch.manual_seed(42)
+
+print("=" * 60)
+print("Delta Rule 公式推导 — 代码逐步验证")
+print("=" * 60)
+
+# ----- Step 1: 写入一对 (k, v) 后读取 -----
+print("\n【Step 1】写入一对 (k, v) 后读取")
+d = 3
+k = F.normalize(torch.randn(d), dim=0)  # 单位向量
+v = torch.randn(d)
+
+S = torch.outer(k, v)  # 写入: S = k · vᵀ
+retrieved = S.T @ k     # 读取: Sᵀ @ k
+
+print(f"  k = {k.tolist()}, ||k|| = {k.norm().item():.4f}")
+print(f"  v = {[f'{x:.4f}' for x in v.tolist()]}")
+print(f"  Sᵀ @ k = {[f'{x:.4f}' for x in retrieved.tolist()]}")
+print(f"  v 和 Sᵀk 是否相等: {torch.allclose(retrieved, v, atol=1e-6)}")
+
+# ----- Step 2: 同一个 key 存两次（累加方式的灾难） -----
+print("\n【Step 2】同一个 key 累加存两次 — 灾难演示")
+k = torch.tensor([1., 0.])  # 单位向量
+v_old = torch.tensor([3., 5.])
+v_new = torch.tensor([-2., 7.])
+
+S_naive = torch.outer(k, v_old) + torch.outer(k, v_new)  # 累加
+retrieved_naive = S_naive.T @ k
+
+print(f"  v_old = {v_old.tolist()}")
+print(f"  v_new = {v_new.tolist()}")
+print(f"  累加后 Sᵀ @ k = {retrieved_naive.tolist()}")
+print(f"  期望 v_new = {v_new.tolist()}")
+print(f"  实际得到 v_old + v_new = {(v_old + v_new).tolist()} ← 错误！旧值没被覆盖")
+
+# ----- Step 3-4: Delta Rule 精确覆写 -----
+print("\n【Step 3-4】Delta Rule 精确覆写 — d=2 数值验证")
+S_old = torch.outer(k, v_old)
+print(f"  S_old = \n{S_old}")
+
+# Delta Rule 三步操作
+old_v = S_old.T @ k                          # 查旧值
+delta = v_new - old_v                          # 算差分
+S_new = S_old + 1.0 * torch.outer(k, delta)   # 写入差分 (β=1)
+
+retrieved_delta = S_new.T @ k
+
+print(f"  查出旧值: Sᵀ_old @ k = {old_v.tolist()}")
+print(f"  差分 delta = v_new - old_v = {delta.tolist()}")
+print(f"  S_new = \n{S_new}")
+print(f"  Sᵀ_new @ k = {retrieved_delta.tolist()}")
+print(f"  是否等于 v_new: {torch.allclose(retrieved_delta, v_new, atol=1e-6)} ✓")
+
+# 验证 S_new 确实等于 k · v_newᵀ
+S_expected = torch.outer(k, v_new)
+print(f"  S_new 是否等于 k·v_newᵀ: {torch.allclose(S_new, S_expected, atol=1e-6)} ✓")
+
+# ----- Step 5: 多对记忆，更新一对不破坏另一对 -----
+print("\n【Step 5】多对记忆 — 更新 ka 不破坏 kb 的记忆")
+ka = torch.tensor([1., 0.])  # 正交单位向量
+kb = torch.tensor([0., 1.])
+va = torch.tensor([3., 5.])
+vb = torch.tensor([8., 1.])
+va_prime = torch.tensor([-2., 7.])
+
+S_old = torch.outer(ka, va) + torch.outer(kb, vb)
+print(f"  S_old = \n{S_old}")
+
+# 用 ka 做 delta rule 更新
+old_va = S_old.T @ ka
+delta_a = va_prime - old_va
+S_new = S_old + torch.outer(ka, delta_a)
+
+print(f"  查 ka 旧值: {old_va.tolist()} (应为 va={va.tolist()})")
+print(f"  S_new = \n{S_new}")
+print(f"  更新后查 ka: {(S_new.T @ ka).tolist()} (应为 va'={va_prime.tolist()}) ✓")
+print(f"  更新后查 kb: {(S_new.T @ kb).tolist()} (应为 vb={vb.tolist()}) ✓ 没被破坏！")
+
+# ----- Step 6: β < 1 时的加权平均效果 -----
+print("\n【Step 6】β < 1 时的部分覆写效果")
+S_old = torch.outer(k, v_old)
+
+for beta in [1.0, 0.5, 0.1, 0.0]:
+    old_v = S_old.T @ k
+    delta = v_new - old_v
+    S_beta = S_old + beta * torch.outer(k, delta)
+    result = S_beta.T @ k
+    expected = (1 - beta) * v_old + beta * v_new
+    print(f"  β={beta:.1f}: Sᵀk = {[f'{x:.2f}' for x in result.tolist()]}"
+          f"  = (1-β)·v_old + β·v_new = {[f'{x:.2f}' for x in expected.tolist()]}"
+          f"  一致: {torch.allclose(result, expected, atol=1e-6)}")
+
+print("\n所有推导步骤均通过代码验证！✓✓✓")
+```
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+
+def phi_elu(x):
+    return F.elu(x) + 1
+```
+
+```python
+# ===== 6.3 DeltaNet Recurrent 实现 =====
+
+def deltanet_recurrent(Q, K, V, beta):
+    """
+    DeltaNet 的 Recurrent 形式
+
+    参数:
+        Q: (N, d) — 查询
+        K: (N, d) — 键（归一化到单位向量）
+        V: (N, d) — 新值
+        beta: (N,) — 学习率，控制更新强度 (0~1)
+
+    更新规则:
+        old_v = S^T @ k_t          ← 查出旧值
+        delta = v_t - old_v         ← 计算差分
+        S = S + beta_t * delta @ k_t^T  ← 写入差分
+    """
+    N, d = Q.shape
+
+    # 归一化 K 到单位向量（DeltaNet 的要求）
+    K_norm = F.normalize(K, dim=-1)
+
+    S = torch.zeros(d, d)  # 隐状态（联想记忆矩阵）
+    outputs = []
+
+    for t in range(N):
+        k_t = K_norm[t]          # (d,)
+        v_t = V[t]               # (d,)
+        q_t = Q[t]               # (d,)
+        b_t = beta[t]            # 标量
+
+        # 第一步：查出旧值
+        old_v = S.T @ k_t        # (d,) ← 用 key 查记忆
+
+        # 第二步：计算差分
+        delta = v_t - old_v      # (d,) ← 新值 - 旧值
+
+        # 第三步：把差分写回
+        S = S + b_t * torch.outer(k_t, delta)  # (d, d)
+
+        # 查询
+        o_t = S.T @ q_t          # (d,)
+        outputs.append(o_t)
+
+    return torch.stack(outputs, dim=0)
+```
+
+```python
+# ===== 6.4 对比实验：信息覆写任务 =====
+# 场景：先写入 (key → value_A)，然后更新为 (key → value_B)
+# 测试：用同一个 key 去查，能否得到最新的 value_B？
+
+d = 16
+
+# 构造一个特定的 key
+target_key = F.normalize(torch.randn(d), dim=0)
+
+# 场景：序列中先写入 (key→v_A)，后写入 (key→v_B)
+N = 20
+K = torch.randn(N, d)  # 随机的 keys
+V = torch.randn(N, d)  # 随机的 values
+Q = torch.randn(N, d)
+
+# 在位置 5 写入 (target_key → value_A)
+value_A = torch.ones(d) * 3.0
+K[5] = target_key
+V[5] = value_A
+
+# 在位置 15 更新为 (target_key → value_B)
+value_B = torch.ones(d) * (-2.0)
+K[15] = target_key
+V[15] = value_B
+
+# 在位置 18 用 target_key 查询
+Q[18] = target_key
+
+beta = torch.ones(N) * 0.8  # 学习率
+
+# 方法1: 普通 Linear Attention（只做累加）
+def linear_recurrent_simple(Q, K, V):
+    N, d = Q.shape
+    K_norm = F.normalize(K, dim=-1)
+    S = torch.zeros(d, d)
+    outputs = []
+    for t in range(N):
+        S = S + torch.outer(K_norm[t], V[t])
+        outputs.append(S.T @ Q[t])
+    return torch.stack(outputs)
+
+# 方法2: RetNet（固定衰减）
+def retnet_simple(Q, K, V, gamma=0.95):
+    N, d = Q.shape
+    K_norm = F.normalize(K, dim=-1)
+    S = torch.zeros(d, d)
+    outputs = []
+    for t in range(N):
+        S = gamma * S + torch.outer(K_norm[t], V[t])
+        outputs.append(S.T @ Q[t])
+    return torch.stack(outputs)
+
+# 方法3: DeltaNet
+out_linear = linear_recurrent_simple(Q, K, V)
+out_retnet = retnet_simple(Q, K, V)
+out_delta = deltanet_recurrent(Q, K, V, beta)
+
+# 看位置18的查询结果（应该更接近 value_B = -2）
+query_pos = 18
+print("=== 信息覆写任务 ===")
+print(f"写入: 位置5 → value_A = {value_A[0].item():.1f}")
+print(f"覆写: 位置15 → value_B = {value_B[0].item():.1f}")
+print(f"查询: 位置{query_pos}，期望得到最新值 value_B = {value_B[0].item():.1f}")
+print()
+
+# 用 target_key 方向的分量来衡量
+target_dir = F.normalize(target_key, dim=0)
+proj_linear = (out_linear[query_pos] @ target_dir).item()
+proj_retnet = (out_retnet[query_pos] @ target_dir).item()
+proj_delta = (out_delta[query_pos] @ target_dir).item()
+
+print(f"Linear Attention 查询结果在 target_key 方向的投影: {proj_linear:.2f}")
+print(f"  → 旧值和新值混在一起，无法精确获取最新值")
+print(f"RetNet 查询结果: {proj_retnet:.2f}")
+print(f"  → 旧值衰减了一些，但仍有残留")
+print(f"DeltaNet 查询结果: {proj_delta:.2f}")
+print(f"  → 精确覆写，得到的接近最新值！")
+```
+
+```python
+# ===== 6.5 Associative Recall 任务 =====
+# 经典测试：给模型看一系列 key-value 对，然后用 key 去查 value
+# 这是测试"记忆精确性"的标准任务
+
+def associative_recall_test(model_fn, n_pairs=5, d=16, **kwargs):
+    """
+    联想回忆测试
+
+    输入序列：[k1, v1, k2, v2, ..., kn, vn, query_k]
+    期望输出：对应 query_k 的 value
+    """
+    # 生成随机的 key-value 对
+    keys = [F.normalize(torch.randn(d), dim=0) for _ in range(n_pairs)]
+    values = [torch.randn(d) for _ in range(n_pairs)]
+
+    # 构造序列：k1, v1, k2, v2, ...（长度 = 2*n_pairs + 1）
+    N = 2 * n_pairs + 1
+    K_seq = torch.zeros(N, d)
+    V_seq = torch.zeros(N, d)
+    Q_seq = torch.zeros(N, d)
+
+    for i in range(n_pairs):
+        K_seq[2*i] = keys[i]      # 偶数位置放 key
+        V_seq[2*i] = values[i]    # 对应的 value
+        K_seq[2*i+1] = torch.randn(d)  # 奇数位置随机填充
+        V_seq[2*i+1] = torch.randn(d) * 0.1
+
+    # 最后一个位置：查询第 query_idx 个 key
+    query_idx = np.random.randint(0, n_pairs)
+    K_seq[-1] = keys[query_idx]
+    Q_seq[-1] = keys[query_idx]
+
+    # 运行模型
+    output = model_fn(Q_seq, K_seq, V_seq, **kwargs)
+
+    # 评估：最后一个位置的输出与期望 value 的余弦相似度
+    predicted = output[-1]
+    expected = values[query_idx]
+    similarity = F.cosine_similarity(predicted.unsqueeze(0), expected.unsqueeze(0)).item()
+
+    return similarity
+
+# 多次测试取平均
+n_tests = 50
+d = 16
+
+results = {}
+for name, fn, kwargs in [
+    ('Linear Attention', linear_recurrent_simple, {}),
+    ('RetNet (γ=0.95)', retnet_simple, {'gamma': 0.95}),
+    ('DeltaNet (β=1.0)', deltanet_recurrent, {'beta': torch.ones(11)}),
+]:
+    scores = [associative_recall_test(fn, n_pairs=5, d=d, **kwargs) for _ in range(n_tests)]
+    avg = np.mean(scores)
+    results[name] = avg
+    print(f"{name:<25} 平均余弦相似度: {avg:.3f}")
+
+# 可视化
+fig, ax = plt.subplots(figsize=(8, 5))
+names = list(results.keys())
+values_plot = list(results.values())
+colors = ['#ff6b6b', '#ffa726', '#66bb6a']
+bars = ax.bar(names, values_plot, color=colors, edgecolor='black', linewidth=1.2)
+ax.set_ylabel('平均余弦相似度 (越高越好)')
+ax.set_title('Associative Recall 任务\n(给定 key 查出对应 value)')
+ax.set_ylim(0, 1)
+ax.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5, label='完美回忆')
+for bar, val in zip(bars, values_plot):
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+            f'{val:.3f}', ha='center', fontsize=11)
+ax.legend()
+ax.grid(True, alpha=0.3, axis='y')
+plt.tight_layout()
+plt.show()
+
+print("\nDeltaNet 在精确回忆任务上显著优于累加式方法！")
+print("因为 Delta Rule 可以精确覆写旧关联，而不是简单累加或衰减")
+```
+
+### 第6章 关键要点
+
+| | Linear Attention | RetNet | DeltaNet |
+|---|---|---|---|
+| **更新方式** | S += k*v^T | S = γS + k*v^T | S += β*(v - S^Tk)*k^T |
+| **旧信息** | 永远累积 | 指数衰减 | **精确覆写** |
+| **记忆模型** | 笔记本（只加） | 淡化笔记本 | 黑板（可擦写） |
+| **精确检索** | 差 | 中等 | **好** |
+
+**Delta Rule 的本质**：
+1. 先查旧值：`old_v = S^T @ k`
+2. 算差分：`delta = new_v - old_v`
+3. 写回差分：`S += β * k * delta^T`
+
+**DeltaNet 的贡献**：
+1. 引入 delta rule → 精确的关联记忆更新
+2. 利用 Householder 矩阵实现并行训练
+3. 1.3B 模型超越 Mamba 和 GLA
+
+**但能不能把 GLA 的智能遗忘和 DeltaNet 的精确覆写结合起来？**
+→ 下一章的 Gated DeltaNet！
+
+---
+
+
+## 第7章：最强组合 — Gated DeltaNet
+
+### 7.1 直觉比喻：可擦写黑板 + 智能橡皮擦
+
+回顾之前的发展：
+- **GLA**（第5章）：有"智能橡皮擦"，能根据内容决定擦多少，但擦除是**模糊的**（整体淡化）
+- **DeltaNet**（第6章）：能**精确擦写**，但缺少全局的遗忘控制
+
+**Gated DeltaNet = GLA + DeltaNet**：
+- 用 **门控** 做宏观遗忘控制（"这段话整体不重要，全部淡化"）
+- 用 **delta rule** 做微观精确覆写（"帽子颜色从红变蓝，精确更新"）
+
+两个机制**互补**：
+- 门控 → **快速、粗粒度**的记忆管理
+- Delta rule → **精确、细粒度**的信息更新
+
+### 7.2 数学公式
+
+$$S_t = \text{diag}(\alpha_t) \cdot S_{t-1} \cdot \text{diag}(\beta_t) + \beta_t' \cdot (v_t - S_{t-1}^T k_t) \cdot k_t^T$$
+
+简化理解：
+$$S_t = \underbrace{G_t \odot S_{t-1}}_{\text{门控遗忘}} + \underbrace{\beta_t \cdot (v_t - S_{t-1}^T k_t) \cdot k_t^T}_{\text{Delta Rule 覆写}}$$
+
+两部分各司其职：
+1. **门控遗忘**：$G_t \odot S_{t-1}$ — 根据当前输入，选择性淡化旧记忆
+2. **Delta 覆写**：$\beta_t \cdot \Delta v_t \cdot k_t^T$ — 精确更新特定 key 对应的 value
+
+```python
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib
+import numpy as np
+
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+torch.manual_seed(42)
+
+def phi_elu(x):
+    return F.elu(x) + 1
+```
+
+```python
+# ===== 7.3 Gated DeltaNet Recurrent 实现 =====
+
+def gated_deltanet_recurrent(Q, K, V, gate, beta):
+    """
+    Gated DeltaNet 的 Recurrent 形式
+
+    参数:
+        Q: (N, d) — 查询
+        K: (N, d) — 键
+        V: (N, d) — 值
+        gate: (N,) — 门控因子 (0~1)，控制全局遗忘
+        beta: (N,) — delta 学习率 (0~1)，控制覆写强度
+
+    更新规则（结合门控和 delta rule）:
+        S_t = gate_t * S_{t-1}  + beta_t * (v_t - S_{t-1}^T k_t) * k_t^T
+               ↑ 门控遗忘           ↑ Delta Rule 精确覆写
+    """
+    N, d = Q.shape
+    K_norm = F.normalize(K, dim=-1)
+
+    S = torch.zeros(d, d)
+    outputs = []
+
+    for t in range(N):
+        k_t = K_norm[t]
+        v_t = V[t]
+        q_t = Q[t]
+        g_t = gate[t]     # 门控因子
+        b_t = beta[t]     # delta 学习率
+
+        # 第一步：门控遗忘
+        S = g_t * S
+
+        # 第二步：delta rule 更新
+        old_v = S.T @ k_t                    # 查旧值
+        delta_v = v_t - old_v                 # 计算差分
+        S = S + b_t * torch.outer(k_t, delta_v)  # 写入差分
+
+        # 查询
+        o_t = S.T @ q_t
+        outputs.append(o_t)
+
+    return torch.stack(outputs, dim=0)
+```
+
+```python
+# ===== 7.4 综合对比实验 =====
+# 任务：序列中包含"写入-更新-噪声-查询"四个阶段
+# 测试各方法处理"遗忘噪声 + 精确覆写"组合场景的能力
+
+def run_comprehensive_test(d=16, n_tests=100):
+    """综合测试：需要同时处理噪声遗忘和精确覆写"""
+    results = {
+        'Linear Attention': [],
+        'RetNet': [],
+        'GLA': [],
+        'DeltaNet': [],
+        'Gated DeltaNet': [],
+    }
+
+    for _ in range(n_tests):
+        N = 40
+        K = torch.randn(N, d)
+        V = torch.randn(N, d) * 0.1  # 背景噪声小
+        Q = torch.randn(N, d)
+
+        # 目标 key
+        target_key = F.normalize(torch.randn(d), dim=0)
+
+        # 阶段1 (位置5): 写入 target_key → value_A
+        value_A = torch.randn(d) * 2.0
+        K[5] = target_key
+        V[5] = value_A
+
+        # 阶段2 (位置10-20): 大量噪声干扰
+        V[10:20] = torch.randn(10, d) * 3.0
+
+        # 阶段3 (位置25): 更新 target_key → value_B
+        value_B = torch.randn(d) * 2.0
+        K[25] = target_key
+        V[25] = value_B
+
+        # 阶段4 (位置35): 查询
+        Q[35] = target_key
+
+        # 各方法的门控/参数
+        beta_vec = torch.ones(N) * 0.9
+        gate_vec = torch.ones(N) * 0.95
+        gate_vec[10:20] = 0.7  # 噪声区域快速遗忘
+
+        # 运行各方法
+        K_norm = F.normalize(K, dim=-1)
+
+        # Linear Attention
+        S = torch.zeros(d, d)
+        for t in range(N):
+            S = S + torch.outer(K_norm[t], V[t])
+        out_la = S.T @ Q[35]
+
+        # RetNet
+        S = torch.zeros(d, d)
+        for t in range(N):
+            S = 0.95 * S + torch.outer(K_norm[t], V[t])
+        out_ret = S.T @ Q[35]
+
+        # GLA
+        S = torch.zeros(d, d)
+        for t in range(N):
+            S = gate_vec[t] * S + torch.outer(K_norm[t], V[t])
+        out_gla = S.T @ Q[35]
+
+        # DeltaNet
+        S = torch.zeros(d, d)
+        for t in range(N):
+            old_v = S.T @ K_norm[t]
+            delta = V[t] - old_v
+            S = S + beta_vec[t] * torch.outer(K_norm[t], delta)
+        out_dn = S.T @ Q[35]
+
+        # Gated DeltaNet
+        S = torch.zeros(d, d)
+        for t in range(N):
+            S = gate_vec[t] * S
+            old_v = S.T @ K_norm[t]
+            delta = V[t] - old_v
+            S = S + beta_vec[t] * torch.outer(K_norm[t], delta)
+        out_gdn = S.T @ Q[35]
+
+        # 评估：与最新 value_B 的余弦相似度
+        for name, out in [('Linear Attention', out_la), ('RetNet', out_ret),
+                          ('GLA', out_gla), ('DeltaNet', out_dn),
+                          ('Gated DeltaNet', out_gdn)]:
+            sim = F.cosine_similarity(out.unsqueeze(0), value_B.unsqueeze(0)).item()
+            results[name].append(sim)
+
+    return {k: np.mean(v) for k, v in results.items()}
+
+print("运行综合测试（需要同时处理噪声遗忘 + 精确覆写）...")
+results = run_comprehensive_test()
+
+print("\n=== 综合测试结果 ===")
+print(f"{'方法':<25} {'平均余弦相似度':<15} {'排名'}")
+print("-" * 55)
+sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
+for rank, (name, score) in enumerate(sorted_results, 1):
+    bar = '█' * int(score * 20) if score > 0 else ''
+    print(f"{name:<25} {score:>8.3f}        #{rank} {bar}")
+```
+
+```python
+# 可视化对比
+fig, ax = plt.subplots(figsize=(10, 6))
+names = list(results.keys())
+scores = list(results.values())
+colors = ['#ff6b6b', '#ffa726', '#42a5f5', '#66bb6a', '#ab47bc']
+bars = ax.barh(names, scores, color=colors, edgecolor='black', linewidth=1.2, height=0.6)
+ax.set_xlabel('平均余弦相似度 (越高=回忆越准确)')
+ax.set_title('综合测试：噪声遗忘 + 精确覆写\n(Gated DeltaNet 结合了 GLA 的智能遗忘 + DeltaNet 的精确覆写)')
+ax.set_xlim(0, 1)
+ax.axvline(x=1.0, color='gray', linestyle='--', alpha=0.3)
+for bar, val in zip(bars, scores):
+    ax.text(bar.get_width() + 0.02, bar.get_y() + bar.get_height()/2,
+            f'{val:.3f}', va='center', fontsize=11)
+ax.grid(True, alpha=0.3, axis='x')
+plt.tight_layout()
+plt.show()
+```
+
+```python
+# ===== 7.5 演进路线总结 =====
+
+print("=" * 70)
+print("Linear Attention 方法演进总结")
+print("=" * 70)
+print()
+
+evolution = [
+    ("Linear Attention", "S = S + k*v^T",
+     "开创性工作", "无遗忘，旧信息不断累积"),
+    ("RetNet", "S = γ*S + k*v^T",
+     "+指数衰减", "γ固定，无法根据内容调整"),
+    ("GLA", "S = G_t*S + k*v^T",
+     "+动态门控", "只能模糊遗忘，不能精确覆写"),
+    ("DeltaNet", "S = S + β*(v-S^Tk)*k^T",
+     "+精确覆写", "缺少全局遗忘控制"),
+    ("Gated DeltaNet", "S = G_t*S + β*(v-S^Tk)*k^T",
+     "+门控+覆写", "当前最强（ICLR 2025）"),
+]
+
+for name, formula, contribution, limitation in evolution:
+    print(f"  {name}")
+    print(f"    公式: {formula}")
+    print(f"    贡献: {contribution}")
+    print(f"    局限: {limitation}")
+    if name != "Gated DeltaNet":
+        print(f"    {'↓':>10}")
+    print()
+```
+
+```python
+# ===== 7.6 隐状态更新过程的可视化对比 =====
+
+d = 8
+N = 30
+torch.manual_seed(123)
+K_all = torch.randn(N, d)
+V_all = torch.randn(N, d)
+K_norm = F.normalize(K_all, dim=-1)
+
+# 同一个 key 在位置 5 和 20 出现（模拟覆写场景）
+shared_key = F.normalize(torch.randn(d), dim=0)
+K_norm[5] = shared_key
+V_all[5] = torch.ones(d) * 2.0   # 旧值
+K_norm[20] = shared_key
+V_all[20] = -torch.ones(d) * 2.0  # 新值
+
+gate_vec = torch.ones(N) * 0.95
+beta_vec = torch.ones(N) * 0.9
+
+# 记录每步的隐状态 Frobenius 范数
+def track_state_norms(method_name):
+    S = torch.zeros(d, d)
+    norms = []
+    for t in range(N):
+        if method_name == 'linear':
+            S = S + torch.outer(K_norm[t], V_all[t])
+        elif method_name == 'retnet':
+            S = 0.95 * S + torch.outer(K_norm[t], V_all[t])
+        elif method_name == 'gla':
+            S = gate_vec[t] * S + torch.outer(K_norm[t], V_all[t])
+        elif method_name == 'deltanet':
+            old_v = S.T @ K_norm[t]
+            delta = V_all[t] - old_v
+            S = S + beta_vec[t] * torch.outer(K_norm[t], delta)
+        elif method_name == 'gated_deltanet':
+            S = gate_vec[t] * S
+            old_v = S.T @ K_norm[t]
+            delta = V_all[t] - old_v
+            S = S + beta_vec[t] * torch.outer(K_norm[t], delta)
+        norms.append(S.norm().item())
+    return norms
+
+fig, ax = plt.subplots(figsize=(10, 5))
+for method, color, label in [
+    ('linear', '#ff6b6b', 'Linear Attention'),
+    ('retnet', '#ffa726', 'RetNet'),
+    ('gla', '#42a5f5', 'GLA'),
+    ('deltanet', '#66bb6a', 'DeltaNet'),
+    ('gated_deltanet', '#ab47bc', 'Gated DeltaNet'),
+]:
+    norms = track_state_norms(method)
+    ax.plot(norms, color=color, linewidth=2, label=label)
+
+ax.axvline(x=5, color='gray', linestyle=':', alpha=0.5)
+ax.axvline(x=20, color='gray', linestyle=':', alpha=0.5)
+ax.text(5, ax.get_ylim()[1]*0.9, '写入旧值', ha='center', fontsize=9)
+ax.text(20, ax.get_ylim()[1]*0.9, '写入新值', ha='center', fontsize=9)
+ax.set_xlabel('时间步')
+ax.set_ylabel('隐状态 ||S|| (Frobenius范数)')
+ax.set_title('各方法隐状态的演变\nLinear Attention 不断膨胀，有遗忘的方法更稳定')
+ax.legend(loc='upper left', fontsize=9)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+print("观察:")
+print("  Linear Attention: 隐状态不断膨胀（信息只增不减）")
+print("  RetNet/GLA: 隐状态有上界（衰减平衡了增长）")
+print("  DeltaNet: 通过覆写保持合理大小")
+print("  Gated DeltaNet: 最稳定（门控+覆写双重控制）")
+```
+
+### 第7章 关键要点
+
+**Gated DeltaNet = GLA 的门控 + DeltaNet 的 delta rule**
+
+| 能力 | GLA 提供 | DeltaNet 提供 |
+|------|----------|---------------|
+| 快速遗忘无关信息 | ✓ 门控 | ✗ |
+| 精确覆写旧信息 | ✗ | ✓ Delta Rule |
+| 组合效果 | **Gated DeltaNet: ✓ + ✓** | |
+
+**发展路线**：
+```
+Linear Attention → (+衰减) RetNet → (+动态门控) GLA
+                                                   ↘
+                                                    Gated DeltaNet ← (+精确覆写) DeltaNet
+```
+
+---
+
+
+## 第8章：全景图 — 统一框架与前沿方向
+
+### 8.1 统一视角：所有方法都是同一个框架的变体
+
+回顾我们学过的所有方法，它们都可以写成同一个递推公式的变体：
+
+$$S_t = \underbrace{f(S_{t-1})}_{\text{遗忘}} + \underbrace{g(k_t, v_t, S_{t-1})}_{\text{写入}}$$
+$$o_t = h(q_t, S_t)$$
+
+不同方法只是 f 和 g 的选择不同：
+
+```python
+import torch
+import torch.nn.functional as F
+import numpy as np
+```
+
+```python
+# ===== 8.2 所有方法的统一对比 =====
+
+print("=" * 80)
+print("所有方法的统一递推公式")
+print("=" * 80)
+print()
+
+methods = [
+    {
+        "name": "Linear Attention",
+        "year": "2020",
+        "forget": "无 (恒等)",
+        "write": "S += k*v^T",
+        "formula": "S_t = S_{t-1} + phi(k_t)*v_t^T",
+        "key_idea": "结合律换序 O(N²)→O(N)",
+    },
+    {
+        "name": "RetNet",
+        "year": "2023",
+        "forget": "固定标量衰减 γ",
+        "write": "S += k*v^T",
+        "formula": "S_t = γ*S_{t-1} + k_t*v_t^T",
+        "key_idea": "指数衰减让旧信息消退",
+    },
+    {
+        "name": "Mamba/SSM",
+        "year": "2024",
+        "forget": "输入依赖对角矩阵 A_t",
+        "write": "h += B_t*x_t",
+        "formula": "h_t = A_t*h_{t-1} + B_t*x_t",
+        "key_idea": "选择性SSM，与Linear Attention等价",
+    },
+    {
+        "name": "GLA",
+        "year": "2024",
+        "forget": "输入依赖门控 G_t",
+        "write": "S += k*v^T",
+        "formula": "S_t = G_t⊙S_{t-1} + k_t*v_t^T",
+        "key_idea": "数据依赖的动态遗忘",
+    },
+    {
+        "name": "DeltaNet",
+        "year": "2024",
+        "forget": "隐式 (通过delta覆写)",
+        "write": "S += β*(v-S^Tk)*k^T",
+        "formula": "S_t = S_{t-1} + β*(v_t-S^T_{t-1}k_t)*k_t^T",
+        "key_idea": "精确覆写旧关联",
+    },
+    {
+        "name": "Gated DeltaNet",
+        "year": "2025",
+        "forget": "显式门控 + delta覆写",
+        "write": "S += β*(v-S^Tk)*k^T",
+        "formula": "S_t = G_t⊙S_{t-1} + β*(v_t-S^T_{t-1}k_t)*k_t^T",
+        "key_idea": "门控遗忘 + 精确覆写",
+    },
+]
+
+for m in methods:
+    print(f"  【{m['name']}】({m['year']})")
+    print(f"    公式:     {m['formula']}")
+    print(f"    遗忘机制: {m['forget']}")
+    print(f"    核心思想: {m['key_idea']}")
+    print()
+```
+
+### 8.3 Mamba/SSM 与 Linear Attention 的关系
+
+Mamba (状态空间模型) 的递推公式：
+```
+h_t = A_t * h_{t-1} + B_t * x_t
+y_t = C_t * h_t
+```
+
+对比 Linear Attention 的递推公式：
+```
+S_t = G_t * S_{t-1} + k_t * v_t^T
+o_t = q_t^T * S_t
+```
+
+**Mamba-2 论文 (Dao & Gu, 2024) 证明了**：
+- A_t ↔ G_t (门控/衰减)
+- B_t * x_t ↔ k_t * v_t^T (写入)
+- C_t ↔ q_t (查询)
+
+**它们是同一个框架的不同参数化方式！**
+
+主要区别：
+- Mamba 用**对角矩阵** A_t → 隐状态是 d 维向量
+- Linear Attention 用**满矩阵** → 隐状态是 d×d 矩阵
+- Mamba 的隐状态更小(d)但数量更多(n个)，Linear Attention 隐状态更大(d²)但更紧凑
+
+
+### 8.4 混合架构：实用的折中方案
+
+纯 Linear Attention 在某些任务上仍不如 Softmax Attention（特别是精确检索和ICL）。
+当前最实用的方案是**混合架构**：
+
+```
+Layer 1:  Linear Attention  ← 高效
+Layer 2:  Linear Attention  ← 高效
+Layer 3:  Linear Attention  ← 高效
+Layer 4:  Softmax Attention ← 精确（每4层放一层）
+Layer 5:  Linear Attention
+Layer 6:  Linear Attention
+Layer 7:  Linear Attention
+Layer 8:  Softmax Attention
+...
+```
+
+**代表性混合架构**：
+| 架构 | 组合方式 | 效果 |
+|------|----------|------|
+| Jamba | Mamba + Softmax Attention | AI21 商用模型 |
+| Samba | Mamba + 滑动窗口 Attention | 微软 |
+| Based | Linear Attention + 滑动窗口 | 推理吞吐 24× FlashAttention-2 |
+| Gated DeltaNet + SWA | Gated DeltaNet + 滑动窗口 | ICLR 2025 最强 |
+
+```python
+# ===== 8.5 开源工具指引 =====
+
+print("=" * 60)
+print("开源工具与实践指引")
+print("=" * 60)
+print()
+
+tools = [
+    {
+        "name": "flash-linear-attention (fla)",
+        "url": "github.com/fla-org/flash-linear-attention",
+        "desc": "30+ 种 Linear Attention 的高效 Triton 实现",
+        "install": "pip install flash-linear-attention",
+        "supports": "GLA, RetNet, DeltaNet, Gated DeltaNet, Mamba2, RWKV-7, ...",
+        "note": "需要 PyTorch>=2.5, Triton>=3.0, NVIDIA/AMD/Intel GPU",
+    },
+    {
+        "name": "Mamba",
+        "url": "github.com/state-spaces/mamba",
+        "desc": "选择性 SSM 的官方实现",
+        "install": "pip install mamba-ssm",
+        "supports": "Mamba, Mamba-2",
+        "note": "提供优化的 CUDA kernel",
+    },
+    {
+        "name": "RWKV",
+        "url": "github.com/BlinkDL/RWKV-LM",
+        "desc": "基于 Linear Attention 的开源 LLM",
+        "install": "pip install rwkv",
+        "supports": "RWKV-5/6/7，最大14B参数",
+        "note": "有预训练模型可直接使用",
+    },
+]
+
+for t in tools:
+    print(f"  [{t['name']}]")
+    print(f"    地址:   {t['url']}")
+    print(f"    简介:   {t['desc']}")
+    print(f"    安装:   {t['install']}")
+    print(f"    支持:   {t['supports']}")
+    print(f"    备注:   {t['note']}")
+    print()
+```
+
+```python
+# ===== 8.6 使用 fla 库的快速示例（伪代码） =====
+
+print("=" * 60)
+print("fla 库使用示例（需安装后运行）")
+print("=" * 60)
+print()
+
+code_example = '''
+# ===== 使用 fla 库的 GLA 层 =====
+# pip install flash-linear-attention
+
+from fla.layers import GatedLinearAttention
+import torch
+
+# 创建一个 GLA 层
+d_model = 512
+n_heads = 8
+gla_layer = GatedLinearAttention(
+    d_model=d_model,
+    num_heads=n_heads,
+    gate_fn='swish',       # 门控激活函数
+    mode='fused_chunk',    # 使用融合的 chunkwise 模式
+)
+
+# 前向传播
+batch_size = 2
+seq_len = 1024
+x = torch.randn(batch_size, seq_len, d_model)
+output, _ = gla_layer(x)
+print(f"输出形状: {output.shape}")  # (2, 1024, 512)
+
+
+# ===== 使用 Gated DeltaNet =====
+from fla.layers import GatedDeltaNet
+
+gdn_layer = GatedDeltaNet(
+    d_model=512,
+    num_heads=8,
+    mode='fused_chunk',
+)
+
+output, _ = gdn_layer(x)
+
+
+# ===== 构建完整模型 =====
+from fla.models import GLAForCausalLM
+from transformers import AutoTokenizer
+
+# 加载预训练模型（如果有的话）
+# model = GLAForCausalLM.from_pretrained("fla-hub/gla-340M")
+# tokenizer = AutoTokenizer.from_pretrained("fla-hub/gla-340M")
+
+# 或者从头配置
+from fla.models import GLAConfig
+config = GLAConfig(
+    hidden_size=512,
+    num_hidden_layers=12,
+    num_heads=8,
+    vocab_size=32000,
+    attn_mode='fused_chunk',
+)
+model = GLAForCausalLM(config)
+print(f"模型参数量: {sum(p.numel() for p in model.parameters()):,}")
+'''
+
+print(code_example)
+print("注意: 以上代码需要安装 fla 库和 GPU 环境才能运行")
+```
+
+### 8.7 推荐学习路线
+
+#### 入门阶段（本教程覆盖）
+1. 理解标准 Softmax Attention 的原理和瓶颈 (第1章)
+2. 理解结合律换序的核心技巧 (第2章)
+3. 理解 RNN 等价性 (第3章)
+4. 理解遗忘和门控的必要性 (第4-5章)
+5. 理解精确覆写 (第6-7章)
+
+#### 进阶阶段（推荐论文）
+1. **Transformers are RNNs** (2020) — 起源
+2. **RetNet** (2023) — 三种并行模式
+3. **Mamba** (2024) — SSM 视角
+4. **Mamba-2** (2024) — 统一框架 (SSD)
+5. **GLA** (2024) — 门控 + 硬件高效训练
+6. **DeltaNet** (2024) — Delta Rule
+7. **Gated DeltaNet** (2025, ICLR) — 当前 SOTA
+
+#### 实践阶段
+1. 安装 `flash-linear-attention` 库
+2. 用 GLA/Gated DeltaNet 替换 Transformer 中的 Attention 层
+3. 在自己的任务上对比性能和效率
+4. 尝试混合架构（Linear + 少量 Softmax）
+
+### 8.8 核心论文链接
+
+| 论文 | 链接 |
+|------|------|
+| Transformers are RNNs (2020) | [arXiv:2006.16236](https://arxiv.org/abs/2006.16236) |
+| RetNet (2023) | [arXiv:2307.08621](https://arxiv.org/abs/2307.08621) |
+| Mamba (2024) | [arXiv:2312.00752](https://arxiv.org/abs/2312.00752) |
+| Mamba-2 / SSD (2024) | [arXiv:2405.21060](https://arxiv.org/abs/2405.21060) |
+| GLA (2024) | [arXiv:2312.06635](https://arxiv.org/abs/2312.06635) |
+| DeltaNet (2024) | [arXiv:2406.06484](https://arxiv.org/abs/2406.06484) |
+| Gated DeltaNet (2025) | [arXiv:2412.06464](https://arxiv.org/abs/2412.06464) |
+| flash-linear-attention | [GitHub](https://github.com/fla-org/flash-linear-attention) |
+
+
+---
+
+## 总结：一句话理解 Linear Attention
+
+> **Linear Attention 的本质是用一个固定大小的"笔记本"（d×d 隐状态矩阵）来压缩无限长的上下文。**
+> **所有后续改进都在回答同一个问题：如何让这个有限的笔记本更聪明地管理信息？**
+
+| 方法 | 怎么管理笔记本 |
+|------|---------------|
+| Linear Attention | 只会往上加，不会擦 |
+| RetNet | 全部内容均匀变淡 |
+| GLA | 智能决定哪些内容变淡 |
+| DeltaNet | 精确擦掉旧内容，写上新内容 |
+| Gated DeltaNet | 智能变淡 + 精确擦写 |
+
+**The End.** 祝学习愉快！
